@@ -1,0 +1,79 @@
+NAME:
+  - "My name is Alice Johnson."
+  - "Please schedule a meeting with Dr Michael Lee."
+  - "Can you connect me with Sarah Thompson from marketing?"
+  - "The report was written by Daniel Martinez."
+  - "Ask Jessica Brown to review the pull request."
+  - "Our new intern is called Marco Rossi."
+  - "I had a call with Priya Patel yesterday."
+  - "Forward this message to Professor Anna Keller."
+
+EMAIL:
+  - "My email is john.doe@example.com."
+  - "Contact us at support@mycompany.io for further assistance."
+  - "Please send the invoice to billing@acme-corp.org."
+  - "You can reach the legal team at legal-team@startup.co."
+  - "Use dev-notifications@internal.lab for deployment alerts."
+  - "The account is registered under jane_smith92@gmail.com."
+  - "Forward logs to logs-collector@infra-tools.net."
+  - "Write to hr.recruiting@globaljobs.com about the position."
+
+PHONE:
+  - "My phone number is +1 415 555 1234."
+  - "Call me at 020 7946 0958 tomorrow morning."
+  - "You can reach the helpdesk at +44 800 123 4567."
+  - "Text me on 347-555-9988 when you arrive."
+  - "Our emergency hotline is +39 06 5555 4321."
+  - "The courier's number is 0039 333 123 4567."
+  - "Please verify the contact number 212 555 0009."
+  - "I accidentally posted my personal number 555 0199 online."
+
+ADDRESS:
+  - "The package should be delivered to 221B Baker Street, London."
+  - "My home address is 1600 Pennsylvania Avenue NW, Washington DC."
+  - "The office is at 1 Infinite Loop, Cupertino, CA."
+  - "Ship the hardware to 350 Fifth Avenue, New York, NY 10118."
+  - "Our warehouse is located at Via Roma 10, 20121 Milano, Italy."
+  - "The billing address is 742 Evergreen Terrace, Springfield."
+  - "Send the contract to 12 Rue de Rivoli, 75001 Paris, France."
+  - "The meetup will be at Hauptstrasse 5, 10115 Berlin."
+
+CARD:
+  - "My card number is 4111 1111 1111 1111."
+  - "Use test card 5500 0000 0000 0004 for the sandbox."
+  - "The corporate card 4000-1234-5678-9010 was declined."
+  - "I accidentally committed the number 4444333322221111 to Git."
+  - "The backup card is 3400 0000 0000 009 for Amex tests."
+  - "Store card 6011 0009 9013 9424 as the default payment method."
+  - "We masked 3530 1113 3330 0000 in the logs."
+  - "Never paste 5105 1051 0510 5100 into a public channel."
+
+ID:
+  - "My passport number is XN1234567."
+  - "The national ID 123456789 was entered incorrectly."
+  - "Her driving license number is DL-9823-456-09."
+  - "The employee ID 0042-IT-777 must not appear in logs."
+  - "Store the tax ID DE123456789 only in the secure vault."
+  - "The social security number 123-45-6789 must be redacted."
+  - "Customer's voter ID ABX987654321 is in the attachment."
+  - "We should never expose the resident permit number ZR990011."
+
+SECRET:
+  - "Here is the API key: sk-1234567890abcdef123456."
+  - "The AWS access key AKIAIOSFODNN7EXAMPLE was leaked."
+  - "Do not commit the GitHub token ghp_abcdEFGH1234567890 to the repo."
+  - "The database password is P4ssw0rdSuperSecret."
+  - "Remove the JWT eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9 from the logs."
+  - "That long string is actually a private key, do not share it."
+  - "We stored the encryption key in the ENV variable APP_MASTER_KEY."
+  - "Rotate the Slack webhook token immediately, it was exposed in chat."
+
+OTHER_PII:
+  - "My date of birth is 14 March 1990 and should be kept private."
+  - "The booking reference ABC12345 is tied to my personal profile."
+  - "That username uniquely identifies me in the system."
+  - "The license plate number AB 123 CD belongs to my car."
+  - "My bank account IBAN is DE89 3704 0044 0532 0130 00."
+  - "The medical record number MRN-998877 should never be logged."
+  - "This QR code encodes my personal ticket ID 9988-7766-5544."
+  - "The insurance policy number PL-2023-000123 is confidential."
