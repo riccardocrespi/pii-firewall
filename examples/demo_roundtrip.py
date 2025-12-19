@@ -2,7 +2,7 @@ from firewall.sanitize import sanitize, desanitize
 
 
 def main() -> None:
-    key = b"demo-key-not-secure"
+    key = b"0123456789abcdef0123456789abcdef"  # 32 bytes, demo only
 
     sample = (
         "My email is john.doe@example.com and my card is 4111 1111 1111 1111. "

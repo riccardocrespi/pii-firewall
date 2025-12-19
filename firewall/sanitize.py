@@ -2,7 +2,8 @@ import re
 from typing import List, Callable
 
 from .spans import Span
-from .crypto_fpe import fpe_encrypt, fpe_decrypt
+# from .crypto_dummy import dummy_encrypt, dummy_decrypt
+from .crypto_aes_gcm import encrypt_pii, decrypt_pii
 from .detection_regex import detect_spans
 
 
@@ -36,7 +37,8 @@ def sanitize(text: str, key: bytes, detector: SpanDetector = detect_spans) -> st
         plain = text[span.start:span.end]
 
         # encrypt immediately
-        ciph = fpe_encrypt(plain, span.type, key)
+        # ciph = dummy_encrypt(plain, span.type, key)
+        ciph = encrypt_pii(plain, span.type, key)
 
         # embed in token; LLM should treat this as opaque
         token = f"⟦{span.type}:{ciph}⟧"
@@ -68,7 +70,8 @@ def desanitize(text: str, key: bytes, *, mode: str = "original") -> str:
             return m.group(0)
 
         # decrypt on the fly
-        plain = fpe_decrypt(payload, pii_type, key)
+        # plain = dummy_decrypt(payload, pii_type, key)
+        plain = decrypt_pii(payload, pii_type, key)
         return plain
 
     return TOKEN_RE.sub(repl, text)
