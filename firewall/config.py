@@ -1,10 +1,11 @@
 import os
 
+from .errors import FirewallError
 
 MIN_KEY_LEN = 32  # bytes, for AES-256-GCM
 
 
-class ConfigError(RuntimeError):
+class ConfigError(FirewallError):
     """Raised when configuration (e.g. key) is invalid or missing."""
     pass
 

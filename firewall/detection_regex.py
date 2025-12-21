@@ -1,7 +1,11 @@
 import re
+import logging
 from typing import List
 
 from .spans import Span
+from .errors import DetectionError
+
+logger = logging.getLogger(__name__)
 
 
 # -------------------- Regex-based detection -------------------- #
@@ -57,29 +61,36 @@ def _add_matches(pattern, pii_type: str, text: str, spans: List[Span]) -> None:
 
 def detect_spans(text: str) -> List[Span]:
     """Regex-only detection v1. No ML yet."""
-    spans: List[Span] = []
+    try:
+        spans: List[Span] = []
 
-    _add_matches(EMAIL_RE, "EMAIL", text, spans)
-    _add_matches(PHONE_RE, "PHONE", text, spans)
-    _add_matches(CARD_RE, "CARD", text, spans)
-    _add_matches(ID_RE, "ID", text, spans)
-    _add_matches(SECRET_RE, "SECRET", text, spans)
-    _add_matches(ADDRESS_RE, "ADDRESS", text, spans)
-    _add_matches(OTHER_PII_RE, "OTHER_PII", text, spans)
-    # _add_matches(NAME_RE, "NAME", text, spans)  # later with AI
+        _add_matches(EMAIL_RE, "EMAIL", text, spans)
+        _add_matches(PHONE_RE, "PHONE", text, spans)
+        _add_matches(CARD_RE, "CARD", text, spans)
+        _add_matches(ID_RE, "ID", text, spans)
+        _add_matches(SECRET_RE, "SECRET", text, spans)
+        _add_matches(ADDRESS_RE, "ADDRESS", text, spans)
+        _add_matches(OTHER_PII_RE, "OTHER_PII", text, spans)
+        # _add_matches(NAME_RE, "NAME", text, spans)  # later with AI
 
-    # sort + merge overlapping spans conservatively
-    spans.sort(key=lambda s: (s.start, s.end))
-    merged: List[Span] = []
-    for s in spans:
-        if not merged:
-            merged.append(s)
-            continue
-        last = merged[-1]
-        if s.start <= last.end:  # overlap or touch
-            # extend last; keep its type (simple policy)
-            last.end = max(last.end, s.end)
-        else:
-            merged.append(s)
+        # sort + merge overlapping spans conservatively
+        spans.sort(key=lambda s: (s.start, s.end))
+        merged: List[Span] = []
+        for s in spans:
+            if not merged:
+                merged.append(s)
+                continue
+            last = merged[-1]
+            if s.start <= last.end:  # overlap or touch
+                # extend last; keep its type (simple policy)
+                last.end = max(last.end, s.end)
+            else:
+                merged.append(s)
 
-    return merged
+        return merged
+
+    except Exception as exc:
+        # Should be very rare, but better to fail clearly
+        logger.exception("Regex-based PII detection failed")
+        raise DetectionError("Regex-based PII detection failed") from exc
+

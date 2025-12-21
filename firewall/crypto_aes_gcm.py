@@ -2,11 +2,16 @@
 
 import os
 import base64
+import logging
 from typing import Dict
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
+
+from .errors import CryptoError
+
+logger = logging.getLogger(__name__)
 
 
 # ---- Buckets: coarse length hiding per type ---- #
@@ -60,7 +65,7 @@ def encrypt_pii(value: str, pii_type: str, master_key: bytes) -> str:
     Returns a base64url-encoded string safe to place inside ⟦TYPE:...⟧.
     """
     if len(master_key) < 32:
-        raise ValueError("master_key must be at least 32 bytes for AES-256-GCM")
+        raise CryptoError("master_key must be at least 32 bytes for AES-256-GCM")
 
     key = _derive_type_key(master_key, pii_type)
     aesgcm = AESGCM(key)
@@ -71,7 +76,7 @@ def encrypt_pii(value: str, pii_type: str, master_key: bytes) -> str:
 
     # 2 bytes for length (big-endian)
     if n > 65535:
-        raise ValueError("PII value too long to encode length in 2 bytes")
+        raise CryptoError("PII value too long to encode length in 2 bytes")
 
     length_prefix = n.to_bytes(2, byteorder="big")
 
@@ -79,7 +84,7 @@ def encrypt_pii(value: str, pii_type: str, master_key: bytes) -> str:
     if pad_len < 0:
         # Should not happen because of _choose_bucket logic,
         # but check to be safe.
-        raise RuntimeError("Bucket too small for plaintext")
+        raise CryptoError("Bucket too small for plaintext")
 
     padding = os.urandom(pad_len)
     padded = length_prefix + plaintext_bytes + padding
@@ -90,7 +95,11 @@ def encrypt_pii(value: str, pii_type: str, master_key: bytes) -> str:
     # Use pii_type as associated data (prevents type swapping)
     aad = pii_type.encode("utf-8")
 
-    ciphertext = aesgcm.encrypt(nonce, padded, aad)
+    try:
+        ciphertext = aesgcm.encrypt(nonce, padded, aad)
+    except Exception as exc:
+        logger.exception("AES-GCM encryption failed for type %s", pii_type)
+        raise CryptoError("Failed to encrypt PII value") from exc
 
     # Output nonce || ciphertext as base64url
     token_bytes = nonce + ciphertext
@@ -102,34 +111,49 @@ def encrypt_pii(value: str, pii_type: str, master_key: bytes) -> str:
 def decrypt_pii(token: str, pii_type: str, master_key: bytes) -> str:
     """
     Inverse of encrypt_pii. Takes base64url string, returns plaintext str.
-    Raises if authentication fails.
+    Raises CryptoError if authentication fails or data is malformed.
     """
     if len(master_key) < 32:
-        raise ValueError("master_key must be at least 32 bytes for AES-256-GCM")
+        raise CryptoError("master_key must be at least 32 bytes for AES-256-GCM")
 
     key = _derive_type_key(master_key, pii_type)
     aesgcm = AESGCM(key)
 
-    token_bytes = base64.urlsafe_b64decode(token.encode("ascii"))
+    try:
+        token_bytes = base64.urlsafe_b64decode(token.encode("ascii"))
+    except Exception as exc:
+        logger.exception("Failed to base64-decode token for type %s", pii_type)
+        raise CryptoError("Invalid ciphertext encoding") from exc
 
     if len(token_bytes) < 12 + 16:
         # 12-byte nonce + at least 16-byte GCM tag
-        raise ValueError("Token too short to be valid")
+        raise CryptoError("Token too short to be a valid AES-GCM ciphertext")
 
     nonce = token_bytes[:12]
     ciphertext = token_bytes[12:]
 
     aad = pii_type.encode("utf-8")
-    padded = aesgcm.decrypt(nonce, ciphertext, aad)
+
+    try:
+        padded = aesgcm.decrypt(nonce, ciphertext, aad)
+    except Exception as exc:
+        # Typically cryptography.exceptions.InvalidTag
+        logger.warning("AES-GCM decryption/authentication failed for type %s", pii_type)
+        raise CryptoError("Failed to decrypt PII value (authentication failed)") from exc
 
     if len(padded) < 2:
-        raise ValueError("Decrypted data too short to contain length")
+        raise CryptoError("Decrypted data too short to contain length field")
 
     n = int.from_bytes(padded[:2], byteorder="big")
     body = padded[2:]
 
     if len(body) < n:
-        raise ValueError("Decrypted data shorter than declared length")
+        raise CryptoError("Decrypted data shorter than declared length")
 
     plain_bytes = body[:n]
-    return plain_bytes.decode("utf-8")
+    try:
+        return plain_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        logger.exception("Failed to decode decrypted bytes as UTF-8")
+        raise CryptoError("Decrypted data is not valid UTF-8") from exc
+
