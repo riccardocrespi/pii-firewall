@@ -1,6 +1,10 @@
 from firewall.sanitize import sanitize, desanitize
 from firewall.config import get_master_key_from_env
 
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
+
 def main() -> None:
     
     # key = b"0123456789abcdef0123456789abcdef"  # 32 bytes, demo only
