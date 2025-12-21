@@ -60,3 +60,25 @@ def test_per_type_keys_differ() -> None:
     # Both must still decrypt correctly under their own type
     assert decrypt_pii(token_email, "EMAIL", MASTER_KEY) == value
     assert decrypt_pii(token_card, "CARD", MASTER_KEY) == value
+
+
+def test_wrong_key_fails() -> None:
+    """
+    Decrypting with a different master key should fail because AES-GCM
+    authentication fails.
+    """
+    token = encrypt_pii("super-secret", "SECRET", MASTER_KEY)
+    other_key = b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"  # 32 bytes, different key
+
+    with pytest.raises(Exception):
+        decrypt_pii(token, "SECRET", other_key)
+
+
+def test_wrong_type_fails() -> None:
+    """
+    Decrypting with the wrong PII type (different AAD) should also fail.
+    """
+    token = encrypt_pii("super-secret", "SECRET", MASTER_KEY)
+
+    with pytest.raises(Exception):
+        decrypt_pii(token, "EMAIL", MASTER_KEY)
