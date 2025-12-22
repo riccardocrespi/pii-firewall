@@ -139,6 +139,7 @@ class GoogleGeminiClient:
         base_url = os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta")
         self._url = f"{base_url}/models/{self._model}:generateContent"
 
+
     async def chat(self, messages: List[Dict[str, str]]) -> str:
         # Concatenate all messages into one user prompt (simple but works for demo)
         # For a real app you’d preserve structure.
