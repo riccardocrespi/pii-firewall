@@ -4,15 +4,15 @@ from typing import List, Callable
 from .spans import Span
 # from .crypto_dummy import dummy_encrypt, dummy_decrypt
 from .crypto_aes_gcm import encrypt_pii, decrypt_pii
-from .detection_regex import detect_spans
-
+#from .detection_regex import detect_spans
+from .detection_combined import detect_spans_combined
 
 TOKEN_RE = re.compile(r"⟦([A-Z_]+):([^⟧]+)⟧")
 
 SpanDetector = Callable[[str], List[Span]]
 
 
-def sanitize(text: str, key: bytes, detector: SpanDetector = detect_spans) -> str:
+def sanitize(text: str, key: bytes, detector: SpanDetector = detect_spans_combined) -> str:
     """
     Replace sensitive spans with tokens of the form:
 
