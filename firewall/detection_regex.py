@@ -37,7 +37,8 @@ SECRET_RE = re.compile(
 )
 
 ADDRESS_RE = re.compile(
-    r"\b\d{1,5}\s+[A-Z][A-Za-z0-9.\s'-]{3,},?\s+[A-Z][A-Za-z.\s'-]{2,}\b"
+    #r"\b\d{1,5}\s+[A-Z][A-Za-z0-9.\s'-]{3,},?\s+[A-Z][A-Za-z.\s'-]{2,}\b"
+    r"\b\d{1,5}[A-Za-z]?\s+[A-Z][A-Za-z0-9.\s'-]{3,},?\s+[A-Z][A-Za-z.\s'-]{2,}\b"
     # e.g. "221B Baker Street, London"
 )
 
@@ -95,6 +96,9 @@ def detect_spans(text: str) -> List[Span]:
                 continue
             last = merged[-1]
             if s.start <= last.end:  # overlap or touch
+                # special case: if PHONE and ID overlap, prefer ID
+                if last.type == "PHONE" and s.type == "ID":
+                    last.type = "ID"
                 # extend last; keep its type
                 last.end = max(last.end, s.end)
             else:

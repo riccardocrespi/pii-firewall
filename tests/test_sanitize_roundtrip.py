@@ -101,3 +101,16 @@ def test_yaml_examples_roundtrip() -> None:
         redacted = sanitize(text, MASTER_KEY)
         restored = desanitize(redacted, MASTER_KEY, mode="original")
         assert restored == text
+
+def test_sanitize_encrypts_name_and_address() -> None:
+    text = "My name is Alice Johnson and I live near Times Square."
+    redacted = sanitize(text, MASTER_KEY)
+
+    # Should contain at least one NAME and one ADDRESS token
+    assert "⟦NAME:" in redacted
+    assert "⟦ADDRESS:" in redacted
+
+    restored = desanitize(redacted, MASTER_KEY, mode="original")
+    assert restored == text
+
+
