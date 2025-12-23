@@ -1,4 +1,4 @@
-def fpe_encrypt(value: str, pii_type: str, key: bytes) -> str:
+def dummy_encrypt(value: str, pii_type: str, key: bytes) -> str:
     """
     Dummy 'encryption' for now – just reverse the string.
     This is NOT secure; it's only to get the pipeline working.
@@ -10,6 +10,6 @@ def fpe_encrypt(value: str, pii_type: str, key: bytes) -> str:
     return value[::-1]
 
 
-def fpe_decrypt(ciphertext: str, pii_type: str, key: bytes) -> str:
+def dummy_decrypt(ciphertext: str, pii_type: str, key: bytes) -> str:
     """Inverse of the dummy encrypt above."""
     return ciphertext[::-1]
