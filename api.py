@@ -25,8 +25,32 @@ app = FastAPI(title="PII Firewall LLM Proxy", version="0.1.0")
 # Serve static files (the UI, CSS, JS) from ./static
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-
 TOKEN_RE = re.compile(r"⟦([A-Z_]+):([^⟧]+)⟧")
+
+# Default system prompt to ensure proper behavior of the model responses
+FIREWALL_SYSTEM_PROMPT = """
+You are a language model sitting behind a PII firewall.
+
+The user messages you receive may contain special tokens of the form:
+
+    ⟦TYPE:PAYLOAD⟧
+
+Examples:
+    ⟦EMAIL:...⟧, ⟦CARD:...⟧, ⟦NAME:...⟧, ⟦ADDRESS:...⟧, ⟦PHONE:...⟧, ⟦SECRET:...⟧, etc.
+
+These tokens represent encrypted sensitive data. You must follow these rules strictly:
+
+1. Treat every token ⟦TYPE:PAYLOAD⟧ as an opaque ID.
+2. NEVER modify, rewrite, truncate, or expand the inside of a token.
+   - Do NOT change TYPE.
+   - Do NOT change PAYLOAD.
+3. You may move or copy the tokens within your reply if it makes sense in context,
+   but the text inside the brackets must remain byte-for-byte identical.
+4. Do NOT try to infer, guess, or “reconstruct” what the original sensitive data was.
+5. Do NOT invent new tokens unless you are explicitly copying one that already appeared in the conversation.
+
+All other text (outside these tokens) should be handled normally: reason, summarize, rewrite, translate, etc., as requested by the user.
+""".strip()
 
 
 # ----------- Request / response models ----------- #
@@ -59,6 +83,7 @@ class ChatResponse(BaseModel):
     final_reply: str
     detected_pii: Optional[List[DetectedPIISummary]] = None
 
+
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded", "error"]
     master_key_present: bool
@@ -69,6 +94,7 @@ class WhoAmIResponse(BaseModel):
     default_provider: Optional[str]
     configured_providers: List[str]
     master_key_present: bool
+
 
 # ----------- Helpers ----------- #
 
@@ -92,20 +118,11 @@ def _provider_env_status() -> Dict[str, bool]:
 def _build_firewalled_client(provider: ProviderName) -> LLMFirewallClient:
     """
     Build an LLMFirewallClient wrapping the selected provider.
+
+    (Currently unused in this API. We handle sanitize/desanitize manually
+    in the /v1/chat/completions endpoint.)
     """
-    master_key = _get_master_key()
-    provider_client = get_provider_client(provider)
-
-    async def llm_call(prompt: str) -> str:
-        # We adapt from simple string prompt to a messages list with one user message.
-        messages = [{"role": "user", "content": prompt}]
-        return await provider_client.chat(messages)
-
-    # LLMFirewallClient expects a sync callable, but our provider is async.
-    # We'll wrap it via anyio/asyncio in the endpoint instead, so here we just
-    # pass a dummy; the actual call happens in the endpoint.
-    # To keep the client reusable, we define a sync proxy in the endpoint.
-    raise NotImplementedError("This helper is not used directly")
+    raise NotImplementedError("This helper is not used directly in the API yet")
 
 
 # ----------- Routes ----------- #
@@ -131,24 +148,41 @@ async def chat(request: ChatRequest) -> ChatResponse:
     # Simple strategy:
     #  - Join all user+system messages into one string to send to the firewall.
     #  - For demo purposes, we treat the whole conversation as a single prompt.
-    lines = []
+    lines: List[str] = []
     for m in request.messages:
         lines.append(f"{m.role.upper()}: {m.content}")
     user_text = "\n".join(lines)
 
-    # We need a sync llm_call that the firewall client can use.
-    # Internally, it will await the async provider.
+    # LLM call wrapper: always add firewall system prompt,
+    # then user system messages, then the sanitized conversation.
     async def async_llm_call(prompt: str) -> str:
-        # Wrap sanitized prompt into messages for the provider.
-        provider_messages: List[Dict[str, Any]] = [
+        """
+        Wrap the sanitized prompt into messages for the provider.
+
+        - Always prepend the firewall system prompt.
+        - Then include any user-provided system messages.
+        - Then send the combined, sanitized conversation as a single user message.
+        """
+        provider_messages: List[Dict[str, Any]] = []
+
+        # 1) Our firewall system prompt (always present)
+        provider_messages.append(
+            {"role": "system", "content": FIREWALL_SYSTEM_PROMPT}
+        )
+
+        # 2) User-provided system messages (optional)
+        for m in request.messages:
+            if m.role == "system":
+                provider_messages.append(
+                    {"role": "system", "content": m.content}
+                )
+
+        # 3) The sanitized conversation as a single user message
+        provider_messages.append(
             {"role": "user", "content": prompt}
-        ]
+        )
+
         return await provider_client.chat(provider_messages)
-
-    # Small async wrapper around LLMFirewallClient
-    # We'll instantiate it with the master key and a sync shim.
-    # To avoid mixing sync/async too much, we call sanitize/desanitize ourselves.
-
 
     # 1) Outgoing firewall
     try:
@@ -156,6 +190,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
     except FirewallError as exc:
         logger.error("Sanitization error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     matches = TOKEN_RE.findall(sanitized_prompt)
     detected_pii: Optional[List[DetectedPIISummary]] = None
     if matches:
@@ -188,8 +223,6 @@ async def chat(request: ChatRequest) -> ChatResponse:
         final_reply=final_reply,
         detected_pii=detected_pii,
     )
-
-
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -225,7 +258,6 @@ async def health() -> HealthResponse:
         master_key_present=master_key_present,
         providers=providers,
     )
-
 
 
 @app.get("/whoami", response_model=WhoAmIResponse)
@@ -279,3 +311,4 @@ async def index() -> str:
         return index_path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return "<h1>PII Firewall UI</h1><p>static/index.html not found.</p>"
+
