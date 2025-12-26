@@ -169,7 +169,7 @@
             ></textarea>
           </div>
 
-          <!-- Options -->
+          <!-- Options + buttons -->
           <div
             class="flex flex-wrap items-center justify-between gap-3"
           >
@@ -186,32 +186,41 @@
                 Show sanitized prompt & raw LLM reply
               </label>
             </div>
-            <button
-              id="submit-btn"
-              class="inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-500 px-4 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:opacity-60 disabled:cursor-wait"
-            >
-              <span id="submit-btn-text">Send through firewall</span>
-              <svg
-                id="submit-spinner"
-                class="h-4 w-4 animate-spin hidden"
-                viewBox="0 0 24 24"
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                id="reset-btn"
+                class="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
               >
-                <circle
-                  class="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  stroke-width="4"
-                  fill="none"
-                ></circle>
-                <path
-                  class="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
-                ></path>
-              </svg>
-            </button>
+                Reset chat
+              </button>
+              <button
+                id="submit-btn"
+                class="inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-500 px-4 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:opacity-60 disabled:cursor-wait"
+              >
+                <span id="submit-btn-text">Send through firewall</span>
+                <svg
+                  id="submit-spinner"
+                  class="h-4 w-4 animate-spin hidden"
+                  viewBox="0 0 24 24"
+                >
+                  <circle
+                    class="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    stroke-width="4"
+                    fill="none"
+                  ></circle>
+                  <path
+                    class="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                  ></path>
+                </svg>
+              </button>
+            </div>
           </div>
 
           <!-- Error area -->
@@ -337,6 +346,14 @@
     </div>
 
     <script>
+      // Per-tab in-memory conversation history
+      // [{role: "system"|"user"|"assistant", content: "..."}]
+      let conversation = [];
+
+      function resetConversation() {
+        conversation = [];
+      }
+
       async function fetchJSON(url) {
         const res = await fetch(url);
         if (!res.ok) throw new Error(await res.text());
@@ -441,13 +458,22 @@
           return;
         }
 
-        const messages = [];
-        if (system) {
-          messages.push({ role: "system", content: system });
-        }
-        messages.push({ role: "user", content: prompt });
+        // --- Conversation history handling ---
 
-        const payload = { provider, messages };
+        // 1. If this is the first turn and a system prompt is provided,
+        //    store it at the start of the conversation.
+        if (conversation.length === 0 && system) {
+          conversation.push({ role: "system", content: system });
+        }
+
+        // 2. Always append the new user turn.
+        conversation.push({ role: "user", content: prompt });
+
+        // 3. Build payload with full history.
+        const payload = {
+          provider,
+          messages: conversation,
+        };
         if (model) payload.model = model;
 
         // UI → loading
@@ -510,6 +536,14 @@
           }
           finalOutput.textContent =
             data.final_reply ?? "";
+
+          // Append assistant reply to conversation history
+          if (data.final_reply) {
+            conversation.push({
+              role: "assistant",
+              content: data.final_reply,
+            });
+          }
         } catch (err) {
           console.error(err);
           errorText.textContent = String(err);
@@ -581,6 +615,20 @@
         form.appendChild(leftSection);
 
         form.addEventListener("submit", handleSubmit);
+
+        const resetBtn = document.getElementById("reset-btn");
+        if (resetBtn) {
+          resetBtn.addEventListener("click", () => {
+            resetConversation();
+            document.getElementById("sanitized-output").textContent =
+              "";
+            document.getElementById("raw-output").textContent = "";
+            document.getElementById("final-output").textContent = "";
+            const piiList = document.getElementById("pii-list");
+            piiList.innerHTML =
+              '<span class="text-slate-400 dark:text-slate-500">Conversation reset.</span>';
+          });
+        }
       });
     </script>
   </body>
