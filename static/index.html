@@ -1,0 +1,587 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>PII Firewall LLM Proxy</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Tailwind via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: "class",
+      };
+    </script>
+  </head>
+  <body
+    class="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 transition-colors duration-200"
+  >
+    <div
+      class="min-h-screen max-w-6xl mx-auto px-4 py-6 flex flex-col gap-6"
+    >
+      <!-- Top bar / title -->
+      <header
+        class="flex flex-col gap-3 sm:flex-row justify-between items-start sm:items-center"
+      >
+        <div class="flex items-center gap-3">
+          <!-- Tiny logo -->
+          <div
+            class="h-10 w-10 rounded-2xl bg-indigo-100 border border-indigo-300 flex items-center justify-center text-indigo-500 shadow-sm dark:bg-indigo-500/10 dark:border-indigo-500/40 dark:text-indigo-300"
+          >
+            <span class="text-lg">🛡️</span>
+          </div>
+          <div>
+            <h1 class="text-2xl sm:text-3xl font-semibold tracking-tight">
+              PII Firewall LLM Proxy
+            </h1>
+            <p class="text-sm text-slate-600 dark:text-slate-400">
+              Local privacy-preserving firewall in front of OpenAI / Claude /
+              Gemini / DeepSeek.
+            </p>
+          </div>
+        </div>
+
+        <div class="flex flex-col items-end gap-1 text-xs text-slate-500">
+          <div class="flex items-center gap-2">
+            <div
+              id="status-pill"
+              class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-100 border border-slate-300 dark:bg-slate-800 dark:border-slate-700"
+            >
+              <span
+                id="status-dot"
+                class="h-2 w-2 rounded-full bg-slate-400"
+              ></span>
+              <span
+                id="status-text"
+                class="text-slate-700 dark:text-slate-100"
+                >Checking status…</span
+              >
+            </div>
+
+            <!-- Light/dark toggle -->
+            <button
+              id="theme-toggle"
+              type="button"
+              class="inline-flex items-center justify-center h-8 w-8 rounded-full border border-slate-300 bg-white text-sm hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800"
+              aria-label="Switch theme"
+            >
+              🌙
+            </button>
+          </div>
+          <div
+            id="providers-text"
+            class="text-right text-slate-500 dark:text-slate-400"
+          ></div>
+        </div>
+      </header>
+
+      <!-- Main content: left form, right results -->
+      <main
+        class="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start"
+      >
+        <!-- Left: form -->
+        <section
+          class="theme-card bg-white border border-slate-200 rounded-2xl shadow-sm p-4 sm:p-5 flex flex-col gap-4 dark:bg-slate-900/60 dark:border-slate-800"
+        >
+          <h2 class="text-lg font-medium flex items-center gap-2">
+            <span
+              class="inline-flex h-6 w-6 items-center justify-center rounded-full bg-slate-100 text-xs text-slate-700 border border-slate-300 dark:bg-slate-800 dark:text-slate-100 dark:border-slate-700"
+              >1</span
+            >
+            Send a request through the firewall
+          </h2>
+
+          <!-- Provider + model row -->
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label
+                for="provider"
+                class="block text-xs font-medium text-slate-700 mb-1 dark:text-slate-200"
+              >
+                Provider
+              </label>
+              <select
+                id="provider"
+                class="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+              >
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic (Claude)</option>
+                <option value="google">Google (Gemini)</option>
+                <option value="deepseek">DeepSeek</option>
+              </select>
+            </div>
+
+            <div>
+              <label
+                for="model"
+                class="block text-xs font-medium text-slate-700 mb-1 dark:text-slate-200"
+              >
+                Model (optional override)
+              </label>
+              <input
+                id="model"
+                type="text"
+                placeholder="e.g. gpt-4o-mini"
+                class="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+              />
+              <p
+                class="mt-1 text-[0.7rem] text-slate-500 dark:text-slate-400"
+              >
+                Leave blank to use the provider default from environment
+                variables.
+              </p>
+            </div>
+          </div>
+
+          <!-- System prompt -->
+          <div>
+            <label
+              for="system"
+              class="block text-xs font-medium text-slate-700 mb-1 dark:text-slate-200"
+            >
+              System prompt (optional)
+            </label>
+            <textarea
+              id="system"
+              rows="2"
+              placeholder="You are a helpful assistant…"
+              class="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+            ></textarea>
+            <p
+              class="mt-1 text-[0.7rem] text-slate-500 dark:text-slate-400"
+            >
+              Sent as a system message to steer the model’s behavior.
+            </p>
+          </div>
+
+          <!-- User prompt -->
+          <div>
+            <label
+              for="prompt"
+              class="block text-xs font-medium text-slate-700 mb-1 dark:text-slate-200"
+            >
+              User message
+            </label>
+            <textarea
+              id="prompt"
+              rows="5"
+              placeholder="My email is john.doe@example.com and my card is 4111 1111 1111 1111. Please summarize this securely…"
+              class="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+            ></textarea>
+          </div>
+
+          <!-- Options -->
+          <div
+            class="flex flex-wrap items-center justify-between gap-3"
+          >
+            <div
+              class="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-200"
+            >
+              <input
+                id="show-debug"
+                type="checkbox"
+                class="h-3.5 w-3.5 rounded border-slate-400 bg-white text-indigo-500 focus:ring-indigo-500 dark:border-slate-600 dark:bg-slate-900"
+                checked
+              />
+              <label for="show-debug" class="select-none">
+                Show sanitized prompt & raw LLM reply
+              </label>
+            </div>
+            <button
+              id="submit-btn"
+              class="inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-500 px-4 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:opacity-60 disabled:cursor-wait"
+            >
+              <span id="submit-btn-text">Send through firewall</span>
+              <svg
+                id="submit-spinner"
+                class="h-4 w-4 animate-spin hidden"
+                viewBox="0 0 24 24"
+              >
+                <circle
+                  class="opacity-25"
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  stroke="currentColor"
+                  stroke-width="4"
+                  fill="none"
+                ></circle>
+                <path
+                  class="opacity-75"
+                  fill="currentColor"
+                  d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                ></path>
+              </svg>
+            </button>
+          </div>
+
+          <!-- Error area -->
+          <p
+            id="error-text"
+            class="text-xs text-red-500 dark:text-red-400 hidden"
+          ></p>
+        </section>
+
+        <!-- Right: results -->
+        <section
+          class="theme-card bg-white border border-slate-200 rounded-2xl shadow-sm p-4 sm:p-5 flex flex-col gap-4 dark:bg-slate-900/60 dark:border-slate-800"
+        >
+          <h2 class="text-lg font-medium flex items-center gap-2">
+            <span
+              class="inline-flex h-6 w-6 items-center justify-center rounded-full bg-slate-100 text-xs text-slate-700 border border-slate-300 dark:bg-slate-800 dark:text-slate-100 dark:border-slate-700"
+              >2</span
+            >
+            Inspect what the firewall did
+          </h2>
+
+          <!-- Detected PII types -->
+          <div id="pii-block" class="flex flex-col gap-1">
+            <div
+              class="flex items-center justify-between gap-2"
+            >
+              <span
+                class="text-xs font-medium text-slate-700 uppercase tracking-wide dark:text-slate-200"
+              >
+                Detected PII types
+              </span>
+              <span
+                class="text-[0.7rem] text-slate-500 dark:text-slate-400"
+              >
+                Counts computed from sanitized prompt
+              </span>
+            </div>
+            <div
+              id="pii-list"
+              class="min-h-[2.25rem] rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700 flex flex-wrap gap-1 items-center dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+            >
+              <span class="text-slate-400 dark:text-slate-500"
+                >No request yet.</span
+              >
+            </div>
+          </div>
+
+          <!-- Sanitized prompt -->
+          <div id="sanitized-block" class="flex flex-col gap-1">
+            <div
+              class="flex items-center justify-between gap-2"
+            >
+              <span
+                class="text-xs font-medium text-slate-700 uppercase tracking-wide dark:text-slate-200"
+              >
+                Sanitized prompt (sent to LLM)
+              </span>
+              <span
+                class="text-[0.7rem] text-slate-500 dark:text-slate-400"
+              >
+                PII is replaced with tokens like ⟦EMAIL:…⟧
+              </span>
+            </div>
+            <pre
+              id="sanitized-output"
+              class="min-h-[5rem] max-h-48 overflow-auto rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-mono text-slate-800 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+            ></pre>
+          </div>
+
+          <!-- Raw LLM reply -->
+          <div id="raw-block" class="flex flex-col gap-1">
+            <div
+              class="flex items-center justify-between gap-2"
+            >
+              <span
+                class="text-xs font-medium text-slate-700 uppercase tracking-wide dark:text-slate-200"
+              >
+                Raw LLM reply (still contains tokens)
+              </span>
+            </div>
+            <pre
+              id="raw-output"
+              class="min-h-[5rem] max-h-48 overflow-auto rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-mono text-slate-800 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+            ></pre>
+          </div>
+
+          <!-- Final reply -->
+          <div class="flex flex-col gap-1">
+            <div
+              class="flex items-center justify-between gap-2"
+            >
+              <span
+                class="text-xs font-medium text-slate-700 uppercase tracking-wide dark:text-slate-200"
+              >
+                Final reply (desanitized locally)
+              </span>
+              <span
+                class="text-[0.7rem] text-slate-500 dark:text-slate-400"
+              >
+                Tokens decrypted and replaced with original PII.
+              </span>
+            </div>
+            <pre
+              id="final-output"
+              class="min-h-[6rem] max-h-64 overflow-auto rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-mono text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+            ></pre>
+          </div>
+        </section>
+      </main>
+
+      <footer
+        class="mt-auto pt-2 text-[0.7rem] text-slate-500 flex flex-wrap justify-between gap-2 dark:text-slate-400"
+      >
+        <span
+          >PII Firewall — local AES-GCM + detection in front of external
+          LLMs.</span
+        >
+        <span
+          >Mode: always desanitize replies for now (API
+          /v1/chat/completions).</span
+        >
+      </footer>
+    </div>
+
+    <script>
+      async function fetchJSON(url) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+      }
+
+      async function initStatus() {
+        const statusDot = document.getElementById("status-dot");
+        const statusText = document.getElementById("status-text");
+        const providersText =
+          document.getElementById("providers-text");
+        const providerSelect = document.getElementById("provider");
+
+        try {
+          const [health, whoami] = await Promise.all([
+            fetchJSON("/health"),
+            fetchJSON("/whoami"),
+          ]);
+
+          // status pill
+          if (health.status === "ok") {
+            statusDot.classList.remove("bg-slate-400");
+            statusDot.classList.add("bg-emerald-500");
+            statusText.textContent = "Ready";
+          } else if (health.status === "degraded") {
+            statusDot.classList.remove("bg-slate-400");
+            statusDot.classList.add("bg-amber-500");
+            statusText.textContent = "Degraded";
+          } else {
+            statusDot.classList.remove("bg-slate-400");
+            statusDot.classList.add("bg-red-500");
+            statusText.textContent = "Error";
+          }
+
+          const configured = whoami.configured_providers || [];
+          providersText.textContent =
+            configured.length > 0
+              ? "Configured providers: " + configured.join(", ")
+              : "No providers configured. Set API keys in .env.";
+
+          // disable providers that aren't configured
+          const options = providerSelect.options;
+          for (let i = 0; i < options.length; i++) {
+            const val = options[i].value;
+            if (!configured.includes(val)) {
+              options[i].disabled = true;
+              options[i].textContent += " (not configured)";
+            }
+          }
+
+          // if current value is disabled, move to first enabled
+          if (providerSelect.selectedOptions[0]?.disabled) {
+            for (let i = 0; i < options.length; i++) {
+              if (!options[i].disabled) {
+                providerSelect.value = options[i].value;
+                break;
+              }
+            }
+          }
+        } catch (err) {
+          statusDot.classList.remove("bg-slate-400");
+          statusDot.classList.add("bg-red-500");
+          statusText.textContent = "Status check failed";
+          providersText.textContent = "Is the API server running?";
+          console.error("Status error", err);
+        }
+      }
+
+      async function handleSubmit(event) {
+        event.preventDefault();
+
+        const provider = document.getElementById("provider").value;
+        const model =
+          document.getElementById("model").value.trim() || null;
+        const system =
+          document.getElementById("system").value.trim();
+        const prompt =
+          document.getElementById("prompt").value.trim();
+
+        const errorText = document.getElementById("error-text");
+        const sanitizedOutput =
+          document.getElementById("sanitized-output");
+        const rawOutput = document.getElementById("raw-output");
+        const finalOutput = document.getElementById("final-output");
+        const showDebug =
+          document.getElementById("show-debug");
+        const piiList = document.getElementById("pii-list");
+
+        const btn = document.getElementById("submit-btn");
+        const btnText =
+          document.getElementById("submit-btn-text");
+        const spinner =
+          document.getElementById("submit-spinner");
+
+        errorText.classList.add("hidden");
+        errorText.textContent = "";
+
+        if (!prompt) {
+          errorText.textContent =
+            "Please enter a user message.";
+          errorText.classList.remove("hidden");
+          return;
+        }
+
+        const messages = [];
+        if (system) {
+          messages.push({ role: "system", content: system });
+        }
+        messages.push({ role: "user", content: prompt });
+
+        const payload = { provider, messages };
+        if (model) payload.model = model;
+
+        // UI → loading
+        btn.disabled = true;
+        spinner.classList.remove("hidden");
+        btnText.textContent = "Sending…";
+
+        sanitizedOutput.textContent = "";
+        rawOutput.textContent = "";
+        finalOutput.textContent = "";
+        piiList.innerHTML =
+          '<span class="text-slate-400 dark:text-slate-500">Detecting…</span>';
+
+        try {
+          const res = await fetch("/v1/chat/completions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          if (!res.ok) {
+            const text = await res.text();
+            throw new Error(
+              `HTTP ${res.status} – ${
+                text || "Unexpected error from server"
+              }`,
+            );
+          }
+
+          const data = await res.json();
+
+          // Detected PII panel
+          if (data.detected_pii && data.detected_pii.length > 0) {
+            piiList.innerHTML = "";
+            for (const item of data.detected_pii) {
+              const badge = document.createElement("span");
+              badge.className =
+                "inline-flex items-center gap-1 rounded-full bg-slate-100 border border-slate-300 px-2 py-0.5 text-[0.7rem] text-slate-800 dark:bg-slate-800 dark:border-slate-600 dark:text-slate-100";
+              const countLabel =
+                typeof item.count === "number"
+                  ? ` (${item.count})`
+                  : "";
+              badge.textContent = `${item.type}${countLabel}`;
+              piiList.appendChild(badge);
+            }
+          } else {
+            piiList.innerHTML =
+              '<span class="text-slate-400 dark:text-slate-500">No PII detected in this request.</span>';
+          }
+
+          // Debug sections
+          if (showDebug.checked) {
+            sanitizedOutput.textContent =
+              data.sanitized_prompt ?? "";
+            rawOutput.textContent =
+              data.raw_llm_reply ?? "";
+          } else {
+            sanitizedOutput.textContent = "";
+            rawOutput.textContent = "";
+          }
+          finalOutput.textContent =
+            data.final_reply ?? "";
+        } catch (err) {
+          console.error(err);
+          errorText.textContent = String(err);
+          errorText.classList.remove("hidden");
+          piiList.innerHTML =
+            '<span class="text-red-500 text-xs dark:text-red-400">Failed to detect PII.</span>';
+        } finally {
+          btn.disabled = false;
+          spinner.classList.add("hidden");
+          btnText.textContent = "Send through firewall";
+        }
+      }
+
+      function initThemeToggle() {
+        const toggle =
+          document.getElementById("theme-toggle");
+
+        function applyTheme(theme) {
+          if (theme === "dark") {
+            document.documentElement.classList.add("dark");
+            toggle.textContent = "☀️";
+            toggle.setAttribute(
+              "aria-label",
+              "Switch to light mode",
+            );
+          } else {
+            document.documentElement.classList.remove("dark");
+            toggle.textContent = "🌙";
+            toggle.setAttribute(
+              "aria-label",
+              "Switch to dark mode",
+            );
+          }
+        }
+
+        const stored = localStorage.getItem("pii-firewall-theme");
+        const prefersDark =
+          window.matchMedia &&
+          window
+            .matchMedia("(prefers-color-scheme: dark)")
+            .matches;
+        const initial = stored || (prefersDark ? "dark" : "light");
+        applyTheme(initial);
+
+        if (toggle) {
+          toggle.addEventListener("click", () => {
+            const isDark =
+              document.documentElement.classList.contains(
+                "dark",
+              );
+            const next = isDark ? "light" : "dark";
+            localStorage.setItem("pii-firewall-theme", next);
+            applyTheme(next);
+          });
+        }
+      }
+
+      document.addEventListener("DOMContentLoaded", () => {
+        initStatus();
+        initThemeToggle();
+
+        const form = document.createElement("form");
+        form.id = "firewall-form";
+        // Wrap the existing left section in a form for enter-to-submit behavior
+        const leftSection = document.querySelector(
+          "main > section:first-child",
+        );
+        leftSection.parentNode.insertBefore(form, leftSection);
+        form.appendChild(leftSection);
+
+        form.addEventListener("submit", handleSubmit);
+      });
+    </script>
+  </body>
+</html>

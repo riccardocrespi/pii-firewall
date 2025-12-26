@@ -2,18 +2,31 @@ from typing import List, Literal, Dict, Any, Optional
 
 import logging
 import os
+import re
+
+from pathlib import Path
+from collections import Counter
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from firewall.client import LLMFirewallClient
 from firewall.config import get_master_key_from_env
 from firewall.errors import FirewallError
 from firewall.providers import get_provider_client, ProviderName
+from firewall.sanitize import sanitize, desanitize
+from firewall.errors import CryptoError, DetectionError, SanitizationError
 
 logger = logging.getLogger("pii_firewall_api")
 
 app = FastAPI(title="PII Firewall LLM Proxy", version="0.1.0")
+# Serve static files (the UI, CSS, JS) from ./static
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+TOKEN_RE = re.compile(r"⟦([A-Z_]+):([^⟧]+)⟧")
 
 
 # ----------- Request / response models ----------- #
@@ -21,6 +34,11 @@ app = FastAPI(title="PII Firewall LLM Proxy", version="0.1.0")
 class Message(BaseModel):
     role: Literal["system", "user", "assistant"]
     content: str
+
+
+class DetectedPIISummary(BaseModel):
+    type: str
+    count: int
 
 
 class ChatRequest(BaseModel):
@@ -39,6 +57,7 @@ class ChatResponse(BaseModel):
     sanitized_prompt: str
     raw_llm_reply: str
     final_reply: str
+    detected_pii: Optional[List[DetectedPIISummary]] = None
 
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded", "error"]
@@ -50,8 +69,6 @@ class WhoAmIResponse(BaseModel):
     default_provider: Optional[str]
     configured_providers: List[str]
     master_key_present: bool
-
-
 
 # ----------- Helpers ----------- #
 
@@ -132,16 +149,21 @@ async def chat(request: ChatRequest) -> ChatResponse:
     # We'll instantiate it with the master key and a sync shim.
     # To avoid mixing sync/async too much, we call sanitize/desanitize ourselves.
 
-    from firewall.sanitize import sanitize, desanitize
 
     # 1) Outgoing firewall
-    from firewall.errors import CryptoError, DetectionError, SanitizationError  # optional
-
     try:
         sanitized_prompt = sanitize(user_text, master_key)
     except FirewallError as exc:
         logger.error("Sanitization error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    matches = TOKEN_RE.findall(sanitized_prompt)
+    detected_pii: Optional[List[DetectedPIISummary]] = None
+    if matches:
+        counts = Counter(t for (t, _) in matches)
+        detected_pii = [
+            DetectedPIISummary(type=t, count=counts[t])
+            for t in sorted(counts.keys())
+        ]
 
     # 2) LLM call (async)
     try:
@@ -164,7 +186,9 @@ async def chat(request: ChatRequest) -> ChatResponse:
         sanitized_prompt=sanitized_prompt,
         raw_llm_reply=raw_reply,
         final_reply=final_reply,
+        detected_pii=detected_pii,
     )
+
 
 
 
@@ -244,3 +268,14 @@ async def whoami() -> WhoAmIResponse:
         master_key_present=master_key_present,
     )
 
+
+@app.get("/", response_class=HTMLResponse)
+async def index() -> str:
+    """
+    Serve the main UI page.
+    """
+    index_path = Path("static") / "index.html"
+    try:
+        return index_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return "<h1>PII Firewall UI</h1><p>static/index.html not found.</p>"
