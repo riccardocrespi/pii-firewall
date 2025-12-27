@@ -1,135 +1,160 @@
+
 # PII Firewall for LLM APIs
 
-A local, privacy-preserving firewall that sits **in front of untrusted LLM APIs**.
+A local, privacy-preserving firewall that sits **in front of external LLM APIs**.
 
 It:
 
-- detects PII (emails, cards, IDs, secrets, etc.) using regex (ML pluggable later),
+- detects PII (emails, cards, IDs, secrets, names, addresses, etc.) using **regex + an ML NER model**,
 - encrypts sensitive spans locally using **AES-GCM + padding**,
-- replaces them with opaque tokens like `⟦EMAIL:...⟧`,
-- forwards only the **sanitized** text to external LLM providers (OpenAI, Anthropic, Gemini, DeepSeek),
-- optionally restores the original plaintext locally in the reply.
+- replaces them with opaque tokens like `⟦EMAIL:…⟧`,
+- forwards only the **sanitized** text to external LLM providers (OpenAI, Anthropic, Google Gemini, DeepSeek),
+- restores the original plaintext locally in the reply.
 
-This repo contains:
+The repository contains:
 
-- a reusable Python library (`firewall/`)
-- a CLI demo (`cli.py`)
-- a FastAPI proxy (`api.py`) that can act as a local LLM gateway.
+- a reusable Python library under `firewall/`,
+- a CLI demo (`cli.py`),
+- a FastAPI proxy (`api.py`) and a Tailwind-based web UI (`static/index.html`),
+- tests and small evaluation corpora for the detector and crypto.
+
+---
+
+## Quick links
+
+- [Architecture](docs/ARCHITECTURE.md) – high-level design, modules and data flow.
+- [Crypto design](docs/CRYPTO.md) – AES-GCM scheme, padding, threat model.
+- [ML / Inference](docs/INFERENCE.md) – NER model, normalization, combined detection.
+- [Usage guide](docs/USAGE.md) – how to run the CLI, API, and web UI in practice.
 
 ---
 
 ## Features
 
-- 🔐 **Local encryption only** – master key never leaves your machine.
-- 🧩 **Tokenized PII** – sensitive substrings replaced by `⟦TYPE:PAYLOAD⟧`.
-- 🧱 **Layered architecture**:
-  - detection → crypto → sanitize/desanitize → client → providers → proxy.
-- 🔌 **Multi-provider support** (behind a common interface):
-  - OpenAI / ChatGPT
-  - Anthropic / Claude
-  - Google / Gemini
-  - DeepSeek
-- ✅ **Tests** for:
-  - AES-GCM crypto (roundtrip, tampering, wrong key/type),
-  - sanitize/desanitize (including YAML example corpus).
+- **Local-only crypto**
+  - Master key never leaves your machine.
+  - PII is always encrypted before leaving the local process.
 
-ML-based detection (BERT-like NER for names) is designed to be plugged in later but is not yet implemented.
+- **Token-based sanitization**
+  - Detected spans are replaced with tokens of the form `⟦TYPE:PAYLOAD⟧`.
+  - `TYPE` describes the category (`EMAIL`, `CARD`, `NAME`, …).
+  - `PAYLOAD` is AES-GCM ciphertext (with padding), safe to send to the LLM.
+
+- **Hybrid detection**
+  - `detection_regex.py` finds structured PII with regular expressions (emails, cards, AWS keys, IDs, etc.).
+  - `ml_detector.py` uses a BERT NER model (`dslim/bert-base-NER`) to detect names and addresses, and some ORG entities.
+  - `detection_combined.py` merges regex + ML spans, with conflict resolution (regex “wins” for strong types).
+
+- **Multi-provider backend**
+  - `providers.py` implements a unified interface for:
+    - OpenAI / ChatGPT (`OPENAI_API_KEY`)
+    - Anthropic / Claude (`ANTHROPIC_API_KEY`)
+    - Google / Gemini (`GEMINI_API_KEY`)
+    - DeepSeek (`DEEPSEEK_API_KEY`)
+
+- **FastAPI proxy + Web UI**
+  - `api.py` exposes:
+    - `POST /v1/chat/completions` – OpenAI-style chat endpoint with an extra `provider` field.
+    - `GET /health` – status and configured providers.
+    - `GET /whoami` – configuration introspection.
+  - `static/index.html` exposes a single-page UI:
+    - provider selection + optional model override,
+    - optional system prompt,
+    - multi-turn chat (history kept in the browser),
+    - PII type/count panel,
+    - debug view: sanitized prompt + raw LLM reply,
+    - final desanitized reply,
+    - light/dark toggle,
+    - reset chat,
+    - modal popup when a provider returns “insufficient balance”.
+
+- **Tests & evaluation data**
+  - `tests/test_crypto_aes_gcm.py` – crypto roundtrip, tampering, wrong key/type.
+  - `tests/test_detection_regex.py` – regression tests for regex patterns.
+  - `tests/test_detection_combined.py` – sanity checks for ML+regex integration.
+  - `tests/test_detection_evalset.py` – evaluation against `data/pii_eval_cases.yaml`.
+  - `tests/test_sanitize_roundtrip.py` – end-to-end sanitize/desanitize.
 
 ---
 
-## Repository structure
+## Repository layout
 
 ```text
 pii-firewall/
 ├─ firewall/
 │  ├─ __init__.py
-│  ├─ spans.py              # Span dataclass
-│  ├─ detection_regex.py    # Regex-based PII detection
-│  ├─ crypto_aes_gcm.py     # AES-GCM + padding crypto (used in production)
-│  ├─ crypto_simple.py      # Legacy/simple reversible scheme (for experiments)
-│  ├─ crypto_dummy.py       # Placeholder / test helpers (if used)
-│  ├─ sanitize.py           # sanitize() / desanitize() pipeline
-│  ├─ client.py             # LLMFirewallClient wrapper
-│  ├─ config.py             # Env-based configuration (master key)
-│  ├─ errors.py             # FirewallError, CryptoError, etc.
-│  └─ providers.py          # OpenAI, Anthropic, Gemini, DeepSeek clients
+│  ├─ spans.py                # Span dataclass (type, start, end)
+│  ├─ errors.py               # FirewallError + Crypto/Detection/Sanitization errors
+│  ├─ detection_regex.py      # Regex-based PII detection
+│  ├─ ml_detector.py          # BERT-based ML detection (NAME, ADDRESS, etc.)
+│  ├─ detection_combined.py   # Hybrid detector (regex + ML)
+│  ├─ crypto_aes_gcm.py       # AES-GCM + padding, per-type keys
+│  ├─ crypto_dummy.py         # Legacy / demo “dummy” crypto (reverse string)
+│  ├─ sanitize.py             # sanitize() / desanitize() pipeline
+│  ├─ client.py               # LLMFirewallClient wrapper
+│  ├─ config.py               # Master key handling from env
+│  ├─ providers.py            # OpenAI / Anthropic / Gemini / DeepSeek clients
+│  └─ spans.py                # Span dataclass
 │
-├─ api.py                   # FastAPI proxy app
-├─ cli.py                   # CLI demo (local firewall wrapper)
+├─ api.py                     # FastAPI proxy (HTTP API + serves web UI)
+├─ cli.py                     # CLI that wraps an arbitrary LLM-like callable
+├─ static/
+│  └─ index.html              # Single-page Tailwind UI
 ├─ data/
-│  └─ pii_example_sentences.yaml   # Example sentences for tests
+│  ├─ pii_example_sentences.yaml  # Examples per PII type
+│  └─ pii_eval_cases.yaml         # Detection evaluation cases
 ├─ tests/
 │  ├─ test_crypto_aes_gcm.py
-│  ├─ test_sanitize_roundtrip.py
-│  └─ ... (possibly more)
+│  ├─ test_detection_regex.py
+│  ├─ test_detection_combined.py
+│  ├─ test_detection_evalset.py
+│  └─ test_sanitize_roundtrip.py
 ├─ docs/
 │  ├─ ARCHITECTURE.md
-│  └─ CRYPTO.md
-├─ .env.example             # Example configuration (copy to .env)
-├─ .gitignore
-├─ pytest.ini
+│  ├─ CRYPTO.md
+│  ├─ INFERENCE.md
+│  └─ USAGE.md
+├─ env.example
 ├─ requirements.txt
+├─ pytest.ini
 └─ README.md
 ```
 
 ---
 
-## Requirements
-
-- Python 3.10+ (3.11 recommended)
-- A virtual environment (optional but recommended)
-- For provider access:
-  - OpenAI: `OPENAI_API_KEY`
-  - Anthropic: `ANTHROPIC_API_KEY` (optional)
-  - Gemini: `GEMINI_API_KEY` (optional)
-  - DeepSeek: `DEEPSEEK_API_KEY` (optional)
-
-Python dependencies (see `requirements.txt`):
-
-- `fastapi`
-- `uvicorn[standard]`
-- `httpx`
-- `cryptography`
-- `pyyaml`
-- `pytest`
-- `python-dotenv` (if using `--env-file`)
-
----
-
-## Setup
-
-Clone the repo and create a virtualenv:
+## Installation
 
 ```bash
-git clone git@github.com:YOUR_USER/pii-firewall.git
+git clone git@github.com:riccardocrespi/pii-firewall.git
 cd pii-firewall
 
 python3 -m venv .venv
 source .venv/bin/activate
-
 pip install -r requirements.txt
 ```
 
-Copy the example environment file and edit it:
+Create and edit `.env`:
 
 ```bash
-cp .env.example .env
+cp env.example .env
 ```
 
-Edit `.env` with your values (especially `PII_FIREWALL_KEY` and any provider API keys).
+Important variables:
 
-Load the `.env` into your shell:
+- `PII_FIREWALL_KEY` – master key for AES-GCM (at least 32 bytes when UTF-8 encoded).
+- `PII_FIREWALL_DEFAULT_PROVIDER` – optional (`openai`, `anthropic`, `google`, `deepseek`).
+- Provider API keys as needed:
+  - `OPENAI_API_KEY`
+  - `ANTHROPIC_API_KEY`
+  - `GEMINI_API_KEY`
+  - `DEEPSEEK_API_KEY`
+
+Load your `.env`:
 
 ```bash
 set -a
 source .env
 set +a
-```
-
-You can check that important vars are visible:
-
-```bash
-python -c "import os; print(os.getenv('PII_FIREWALL_KEY') is not None, os.getenv('OPENAI_API_KEY') is not None)"
 ```
 
 ---
@@ -138,38 +163,39 @@ python -c "import os; print(os.getenv('PII_FIREWALL_KEY') is not None, os.getenv
 
 ```bash
 source .venv/bin/activate
-set -a; source .env; set +a   # ensures env vars are available if needed
+set -a; source .env; set +a
 
 pytest -q
+```
+
+If you mark ML-heavy tests as `slow`, you can run:
+
+```bash
+pytest -m "not slow"   # fast subset
+pytest -m slow         # only ML-heavy tests
 ```
 
 ---
 
 ## CLI usage
 
-The CLI wraps a fake LLM to demonstrate the firewall:
-
 ```bash
-source .venv/bin/activate
-set -a; source .env; set +a
-
 python cli.py "My email is john.doe@example.com and my card is 4111 1111 1111 1111."
 ```
 
-Output (structure):
+The CLI prints:
 
-- Original user input
-- Sanitized prompt sent to (fake) LLM
-- Raw LLM reply (contains tokens)
-- Final reply presented to user (PII restored by desanitize)
+1. sanitized prompt,
+2. raw LLM reply (still containing tokens),
+3. final reply (PII restored).
 
-To keep replies encrypted (tokens not decoded):
+Encrypted-only mode:
 
 ```bash
 python cli.py --mode encrypted "My phone is +1 415 555 1234."
 ```
 
-For debug logs:
+Verbose mode:
 
 ```bash
 python cli.py -v "Here is an AWS key AKIAIOSFODNN7EXAMPLE."
@@ -179,119 +205,44 @@ python cli.py -v "Here is an AWS key AKIAIOSFODNN7EXAMPLE."
 
 ## FastAPI proxy
 
-The proxy exposes a small OpenAI-like endpoint plus health endpoints.
-
-### Run the server
-
-With `.env` in place and loaded (or using `--env-file`):
+Start:
 
 ```bash
-source .venv/bin/activate
-
-# Option 1: env already loaded via `source .env`
 uvicorn api:app --reload
-
-# Option 2: let uvicorn load .env
-# uvicorn api:app --reload --env-file .env
+# or: uvicorn api:app --reload --env-file .env
 ```
 
-Server starts at `http://127.0.0.1:8000`.
+Then open: `http://127.0.0.1:8000/`
 
-### Health & introspection
+You can:
 
-Check configuration:
+- choose provider and optionally override the model,
+- set a system prompt,
+- chat in multiple turns,
+- see detected PII types and counts,
+- inspect sanitized prompt and raw LLM reply,
+- see final desanitized reply,
+- toggle light/dark mode and reset chat.
 
-```bash
-curl http://127.0.0.1:8000/health
-curl http://127.0.0.1:8000/whoami
-```
+API endpoints:
 
-Interactive docs:
+- `GET /health` – status + configured providers.
+- `GET /whoami` – introspection (master key present, default provider, etc.).
+- `POST /v1/chat/completions` – OpenAI-style chat with `provider` field.
 
-- Open `http://127.0.0.1:8000/docs` in your browser.
-
-### Chat endpoint
-
-`POST /v1/chat/completions`
-
-Request shape (similar to OpenAI, with an extra `provider` field):
-
-```json
-{
-  "provider": "openai",
-  "messages": [
-    {"role": "user", "content": "My email is john.doe@example.com and my card is 4111 1111 1111 1111. Please summarize."}
-  ]
-}
-```
-
-Example `curl`:
-
-```bash
-curl -X POST http://127.0.0.1:8000/v1/chat/completions   -H "Content-Type: application/json"   -d '{
-    "provider": "openai",
-    "messages": [
-      {
-        "role": "user",
-        "content": "My email is john.doe@example.com and my card is 4111 1111 1111 1111. Please summarize."
-      }
-    ]
-  }'
-```
-
-Response:
-
-```json
-{
-  "sanitized_prompt": "USER: My email is ⟦EMAIL:...⟧ and my card is ⟦CARD:...⟧. Please summarize.",
-  "raw_llm_reply": "...reply text with tokens...",
-  "final_reply": "...reply text with original email and card restored..."
-}
-```
-
-Supported `provider` values:
-
-- `"openai"`
-- `"anthropic"`
-- `"google"` (Gemini)
-- `"deepseek"`
-
-Only providers with API keys set in environment will be usable. `/health` and `/whoami` show which ones are configured.
+If a provider reports insufficient balance, the API returns HTTP 402 with a normalized JSON payload; the UI shows a modal popup and an inline error.
 
 ---
 
-## Threat model (high level)
+## Design docs
 
-- The LLM provider **never sees raw PII**; it only sees tokens like `⟦TYPE:BASE64⟧`.
-- Encryption (AES-GCM) and decryption happen **locally**, using a master key loaded from `PII_FIREWALL_KEY`.
-- Length leakage is reduced (but not eliminated) via **bucketed padding**.
-- Integrity is enforced: tampering with ciphertext causes decryption to fail.
-
-For more detail, see `docs/CRYPTO.md`.
-
----
-
-## Roadmap / Future work
-
-- 🔠 ML / BERT-like detector for names and less structured PII.
-- 🎛 Configurable policies:
-  - which PII types to mask
-  - per-type modes (`original` vs `encrypted`).
-- 📡 Streaming support (proxying SSE / streaming responses).
-- 📊 Debug UI that visualizes detected spans & tokens.
-
----
-
-## Limitations
-
-- Detection is currently **regex-based only** (no ML yet), so:
-  - some PII may not be detected,
-  - some non-PII text may be detected (false positives).
-- The proxy does not attempt to **rewrite** model outputs beyond token desanitization.
-- Bucketed padding leaks approximate length; this is a trade-off between complexity and privacy for a course project.
+- [Architecture](docs/ARCHITECTURE.md)
+- [Crypto design](docs/CRYPTO.md)
+- [ML / Inference](docs/INFERENCE.md)
+- [Usage guide](docs/USAGE.md)
 
 ---
 
 ## License
 
-TBD (choose MIT / Apache-2.0 / etc. depending on course requirements).
+MIT License – see [LICENSE](LICENSE) for details.

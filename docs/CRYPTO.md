@@ -1,286 +1,175 @@
-# Crypto Design
+# Crypto design
 
-This document describes the cryptographic design used by the PII Firewall.
-
----
+This document explains the cryptographic design implemented in `firewall/crypto_aes_gcm.py` and how it is used by the sanitization pipeline.
 
 ## Goals
 
-1. **Confidentiality**: PII should not be visible to external LLM providers.
-2. **Integrity / authenticity**: any tampering with ciphertext should be detected.
-3. **Local-only key**: encryption and decryption happen only on the client side.
-4. **Reduced length leakage**: ciphertext length should reveal as little as reasonably possible about the plaintext length, while keeping the implementation simple enough for a course project.
+- Ensure that **raw PII never leaves the local process** in plaintext.
+- Provide **semantic security** for sensitive spans using AEAD (AES‑GCM).
+- Limit **length leakage** via padding buckets.
+- Prevent **type swapping** (e.g. reusing an `EMAIL` ciphertext as a `CARD`).
+- Keep a simple token format that is easy to test and debug.
 
-We **do not** aim to:
+## Token format
 
-- fully hide the **type** of PII (e.g., EMAIL vs CARD),
-- achieve full format-preserving encryption (FPE) – we explicitly avoid exact length preservation.
-
----
-
-## Overview
-
-Each PII substring is:
-
-1. Encrypted with **AES-256-GCM** using a per-type key derived from a master key.
-2. Padded into a **bucketed length** before encryption to reduce length leakage.
-3. Embedded in a token of the form:
-
-   ```text
-   ⟦TYPE:PAYLOAD⟧
-   ```
-
-   where:
-   - `TYPE` is an uppercase label (e.g., `EMAIL`, `CARD`, etc.),
-   - `PAYLOAD` is `base64url(nonce || ciphertext)`.
-
-Tokens are inserted into the text by `sanitize()` and removed/decoded by `desanitize()`.
-
----
-
-## Master key
-
-- The master key is loaded from the environment via `PII_FIREWALL_KEY`.
-- It must be at least **32 bytes** (for AES-256).
-- It is represented as a UTF-8 string in the environment and converted to bytes in code.
-- The key is **never** sent to the LLM provider.
-
-In code:
-
-```python
-from firewall.config import get_master_key_from_env
-
-master_key = get_master_key_from_env("PII_FIREWALL_KEY")
-```
-
----
-
-## Per-type keys (HKDF)
-
-To limit the impact of key reuse across different PII types, a per-type key is derived from the master key using HKDF:
-
-- HKDF with SHA-256 and 32-byte output.
-- `info` parameter: `"pii-firewall:{TYPE}"`.
-
-Conceptually:
-
-```python
-type_key = HKDF(
-    algorithm=SHA256,
-    length=32,
-    salt=None,
-    info=f"pii-firewall:{pii_type}".encode("utf-8"),
-).derive(master_key)
-```
-
-This means:
-
-- `EMAIL` and `CARD` use different keys, even if they share the same master key.
-- Knowing the subkey for one type does not trivially give subkeys for others.
-
----
-
-## Padding & length buckets
-
-Plaintext PII values are padded into **buckets** to reduce length leakage.
-
-For each PII type, we define a set of bucket sizes, e.g.:
-
-```python
-TYPE_BUCKETS = {
-    "CARD": [16, 24, 32],
-    "PHONE": [16, 24, 32],
-    "EMAIL": [32, 64, 128],
-    "ADDRESS": [64, 128, 256],
-    "SECRET": [64, 128, 256],
-    "OTHER_PII": [32, 64, 128],
-}
-```
-
-Given a plaintext `value` and type `T`:
-
-1. Encode `value` as UTF-8 → `plaintext_bytes`.
-2. Let `n = len(plaintext_bytes)`.
-3. Choose the smallest bucket `B` in `TYPE_BUCKETS[T]` such that `n + 2 <= B` (2 bytes for length).
-4. Construct:
-
-   ```text
-   padded = [len_plain (2 bytes, big-endian)] + plaintext_bytes + random_pad
-   ```
-
-   where `len(padded) == B`.
-
-If no bucket is large enough, we use the largest bucket (or raise an error, depending on implementation).
-
-This scheme:
-
-- ensures bounded length leakage (you can tell the bucket, not the exact length),
-- keeps implementation relatively simple for a student project.
-
----
-
-## AES-GCM encryption
-
-We use AES-GCM (Galois/Counter Mode):
-
-- Key: 32-byte per-type key (derived via HKDF).
-- Nonce: 12 random bytes (`os.urandom(12)`).
-- Associated Data (AAD): the PII type string (`pii_type.encode("utf-8")`).
-
-Encryption:
-
-```python
-nonce = os.urandom(12)
-aad = pii_type.encode("utf-8")
-ciphertext = AESGCM(type_key).encrypt(nonce, padded, aad)
-```
-
-Output:
-
-- Concatenate `nonce || ciphertext` and encode with base64url:
-
-```python
-token_bytes = nonce + ciphertext
-token_str = base64.urlsafe_b64encode(token_bytes).decode("ascii")
-```
-
-This `token_str` is what goes inside the `⟦TYPE:...⟧` token.
-
----
-
-## AES-GCM decryption
-
-To decrypt:
-
-1. Base64url-decode `token_str`:
-
-   ```python
-   token_bytes = base64.urlsafe_b64decode(token_str)
-   ```
-
-2. Split:
-
-   - `nonce = token_bytes[:12]`
-   - `ciphertext = token_bytes[12:]`
-
-3. Use the *same* per-type key and AAD = type string:
-
-   ```python
-   padded = AESGCM(type_key).decrypt(nonce, ciphertext, aad)
-   ```
-
-4. Decode:
-
-   - Check that `len(padded) >= 2`.
-   - Extract `len_plain = int.from_bytes(padded[:2], "big")`.
-   - Extract `plain_bytes = padded[2:2+len_plain]`.
-   - Decode `plain_bytes` as UTF-8.
-
-Any of the following will cause decryption to fail and raise `CryptoError`:
-
-- invalid base64,
-- incorrect nonce/ciphertext lengths,
-- authentication failure (tampering, wrong key, wrong type / AAD),
-- length field inconsistent with body,
-- invalid UTF-8.
-
----
-
-## Token structure
-
-The sanitized text uses a **custom token format**:
+Sanitization replaces PII substrings with tokens of the form:
 
 ```text
 ⟦TYPE:PAYLOAD⟧
-
-TYPE    = uppercase label, e.g. EMAIL, CARD, SECRET, ...
-PAYLOAD = base64url(nonce || AESGCM(type_key).encrypt(...))
 ```
 
-Examples:
+- `TYPE`: plaintext label (e.g. `EMAIL`, `CARD`, `NAME`, `ADDRESS`).
+- `PAYLOAD`: base64url-encoded `nonce || ciphertext`, where `ciphertext` is AES‑GCM over a padded plaintext.
+
+PII values are never logged or sent to external LLMs in plaintext.
+
+## Master key and per-type subkeys
+
+The crypto layer expects a **master key**:
+
+- loaded from `PII_FIREWALL_KEY` via `get_master_key_from_env()`,
+- at least 32 bytes when UTF‑8 encoded (for AES‑256‑GCM).
+
+For each PII type we derive a 32‑byte subkey using HKDF:
+
+```python
+HKDF(
+    algorithm=hashes.SHA256(),
+    length=32,
+    salt=None,
+    info=f"pii-firewall:{pii_type}".encode("utf-8"),
+)
+```
+
+This isolates key material across PII types.
+
+
+## Padding & buckets
+
+To reduce length leakage, the plaintext is padded into **buckets**.
+
+Plaintext layout inside AES‑GCM:
 
 ```text
-"My email is ⟦EMAIL:AbCdEf...⟧ and my card is ⟦CARD:XyZ...⟧."
+[ 2-byte length prefix ][ UTF-8 plaintext ][ random padding ]
 ```
 
-The LLM provider sees opaque tokens with no direct hint of the plaintext.
+- The first 2 bytes store `n = len(plaintext_bytes)` in big-endian.
+- The rest is random bytes so that the total padded length fits into a bucket.
 
-On the way back, `desanitize()`:
+Buckets per type (simplified):
 
-- finds `⟦TYPE:PAYLOAD⟧` tokens,
-- calls `decrypt_pii(PAYLOAD, TYPE, master_key)`,
-- replaces tokens with plaintext (in `mode="original"`),
-- leaves tokens intact if `mode="encrypted"`.
+```python
+_DEFAULT_BUCKETS = [16, 32, 64, 128, 256]
 
----
+TYPE_BUCKETS = {
+    "CARD":     [16, 24, 32],
+    "PHONE":    [16, 24, 32],
+    "ID":       [16, 24, 32],
+    "EMAIL":    [32, 64, 128],
+    "ADDRESS":  [64, 128, 256],
+    "SECRET":   [64, 128, 256],
+    "OTHER_PII":[32, 64, 128],
+}
+```
+
+For each `(pii_type, n)` pair, `_choose_bucket()` picks the smallest bucket `B` with `2 + n ≤ B`. Any leftover is filled with `os.urandom` bytes.
+
+This reduces, but does not eliminate, information leakage from the ciphertext length. Buckets are tuned per type and can be adjusted.
+
+
+## AES‑GCM API
+
+The module exposes:
+
+```python
+encrypt_pii(value: str, pii_type: str, master_key: bytes) -> str
+decrypt_pii(token: str, pii_type: str, master_key: bytes) -> str
+```
+
+### Encryption
+
+1. Check master key length (≥ 32 bytes).
+2. Derive per‑type key with HKDF.
+3. Encode `value` as UTF‑8.
+4. Build the padded plaintext as described above.
+5. Generate a 12‑byte random nonce (`os.urandom(12)`).
+6. Set AAD = `pii_type.encode("utf-8")` (associated data).
+7. Compute `ciphertext = AESGCM(key).encrypt(nonce, padded, aad)`.
+8. Concatenate `nonce || ciphertext` and base64url‑encode to ASCII.
+
+The returned string is what appears in `⟦TYPE:PAYLOAD⟧`.
+
+
+### Decryption
+
+1. Check master key length and derive the same per‑type key.
+2. Base64url‑decode the token and split `nonce` and `ciphertext`.
+3. Call `AESGCM(key).decrypt(nonce, ciphertext, aad)` with the same AAD.
+   - On authentication failure, raise `CryptoError("Failed to decrypt PII value (authentication failed)")`.
+4. Parse the decrypted padded bytes:
+   - first 2 bytes → `n`,
+   - next `n` bytes → the plaintext,
+   - the rest is padding and is discarded.
+5. Decode the plaintext bytes as UTF‑8 and return the resulting string.
+
+## Type binding and tamper resistance
+
+Using `pii_type` as AAD binds ciphertext to its type:
+
+- A token encrypted as `TYPE="EMAIL"` cannot be successfully decrypted as `TYPE="CARD"`, because the AAD differs.
+- Any attempt at type swapping yields an authentication failure in AES‑GCM.
+
+This is a simple but effective defense against cross‑type reuse of ciphertexts.
+
 
 ## Error handling
 
-All crypto errors are wrapped into `CryptoError` (a subclass of `FirewallError`):
+All crypto failures raise a `CryptoError`:
 
-- invalid or short master key,
-- PII too long for the encoding scheme,
-- malformed base64,
-- short token bytes,
-- AES-GCM authentication failures,
-- invalid length field / truncated data,
-- UTF-8 decode errors.
+- invalid master key,
+- base64 decoding errors,
+- AES‑GCM authentication failure,
+- malformed decrypted data (too short, bad length prefix, invalid UTF‑8).
 
-The app layer (CLI, FastAPI) can catch `FirewallError` / `CryptoError` and respond with appropriate error messages or HTTP status codes.
+The sanitization layer catches `CryptoError` and wraps it into `SanitizationError` where appropriate, so application code can treat the whole pipeline as a single black box.
 
----
 
-## Alternatives considered
+## Integration with sanitize()/desanitize()
 
-### 1. Pure format-preserving encryption (FPE)
+The sanitization functions are defined in `sanitize.py`:
 
-Early ideas considered format-preserving encryption (e.g. FF1/FF3 over digits) to keep card numbers or phone numbers looking like original formats.
+- `sanitize(text, key)`:
+  - runs detection to obtain spans (`Span(type, start, end)`),
+  - slices the text at those spans,
+  - replaces each span with `⟦TYPE:encrypt_pii(span_text, TYPE, key)⟧`.
 
-Reasons we did **not** choose this:
+- `desanitize(text, key, mode="original")`:
+  - in `"original"` mode, finds tokens with a regex and calls `decrypt_pii()` for each,
+  - in `"encrypted"` mode, leaves tokens as-is.
 
-- FPE preserves length and often structure, directly leaking more information.
-- Implementations are more complex and require careful parameter choices to avoid subtle vulnerabilities.
-- For a course project, integrating a full FPE library would make the crypto part heavier than needed.
+If token decryption fails, `desanitize()` raises `SanitizationError`; callers can decide whether to propagate, mask, or log these failures.
 
-Instead, we accept that tokens no longer resemble the original PII and focus on correctness, integrity, and reduced length leakage.
 
-### 2. Simple reversible scheme (toy)
+## Dummy crypto
 
-The project started with a trivial reversible scheme (string reversal) to validate the pipeline. This is still available as `crypto_simple.py` / `crypto_dummy.py` for tests or experimentation, but is **not** used in the main app.
+`crypto_dummy.py` contains `dummy_encrypt()` / `dummy_decrypt()` that simply reverse the string. This is only used in tests or experiments and is **not** used in the production pipeline.
 
----
 
-## Security notes / limitations
+## Threat model (short version)
 
-- This design uses **standard building blocks**:
-  - AES-256-GCM for authenticated encryption,
-  - HKDF for key derivation.
-- Bucketed padding reduces but does not eliminate length leakage.
-- The threat model assumes:
-  - the local environment is trusted,
-  - the master key is not compromised,
-  - the attacker may observe all traffic to/from the LLM provider.
+This design aims to:
 
-Limitations:
+- keep PII encrypted whenever it leaves the local machine,
+- avoid unauthenticated encryption,
+- prevent simple replay/type-swapping of ciphertext across PII categories,
+- limit, though not fully eliminate, information leaked through ciphertext length.
 
-- If the attacker compromises the local machine or obtains `PII_FIREWALL_KEY`, they can decrypt any tokens.
-- Regex detection is imperfect; undetected PII will not be protected.
-- Tokens themselves are clearly marked as special; an attacker can see **that** a sensitive field exists, only not what it contains.
+Out of scope (for now):
 
-For a production system, you would want:
+- key management at scale (KMS, rotation),
+- side-channel attacks (timing, cache),
+- sophisticated traffic analysis beyond padding buckets.
 
-- stronger key management (HSM, secret managers),
-- more defense-in-depth around logs and backups,
-- better and more comprehensive PII detection (including ML),
-- formal review of crypto and implementation details.
+These can be addressed in future iterations based on deployment needs.
 
----
-
-## Summary
-
-- AES-GCM provides confidentiality and integrity for each PII span.
-- HKDF-derived per-type keys isolate different categories of PII.
-- Bucketed padding reduces length leakage while staying relatively simple.
-- Tokens encapsulate ciphertext in an LLM-friendly, opaque format that the provider cannot decode without the master key.
-
-This is a **deliberate compromise** between practical implementation complexity and credible cryptographic behavior for a student-level project.

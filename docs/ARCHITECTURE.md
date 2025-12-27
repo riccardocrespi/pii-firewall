@@ -1,269 +1,250 @@
-# Architecture Overview
+# Architecture
 
-This document describes the main components of the PII Firewall and how they interact.
+This document describes the overall architecture of the PII Firewall, how data flows through the system, and how the main modules fit together.
 
----
+## High-level picture
 
-## High-level data flow
-
-For a typical request:
-
-1. User sends a prompt to the **local proxy** (FastAPI app).
-2. The proxy:
-   - concatenates messages into a prompt string,
-   - runs `sanitize(prompt, master_key)` → produces a **sanitized prompt**.
-3. The sanitized prompt is sent to the **LLM provider** (OpenAI / Anthropic / Gemini / DeepSeek).
-4. The provider returns a reply that may contain tokens like `⟦EMAIL:...⟧`.
-5. The proxy runs `desanitize(reply, master_key)` to restore plaintext locally.
-6. The caller receives a final reply (with or without PII, depending on mode).
-
----
-
-## Layered view
+The project is built as a **library** plus a **web proxy** and a **CLI demo**.
 
 ```text
-[ User / Client ]
-       │
-       ▼
-[ FastAPI Proxy: api.py ]
-  - /v1/chat/completions
-  - /health
-  - /whoami
-       │
-       ├─ sanitize(user_text, key)
-       │     │
-       │     ▼
-       │  [ Detection Layer ]
-       │   - firewall/detection_regex.py
-       │
-       ├─ [ Provider Layer ]
-       │   - firewall/providers.py
-       │   - HTTP calls (OpenAI, Anthropic, Gemini, DeepSeek)
-       │
-       └─ desanitize(raw_llm_reply, key)
-             │
-             ▼
-      [ Final reply to user ]
+[ User (browser or CLI) ]
+          │
+          ▼
+[ Application / Proxy ]
+  - api.py (FastAPI)
+  - cli.py
+          │
+          ├─ sanitize(user_text, master_key)
+          │     ├─ detection_combined.detect_spans_combined()
+          │     │      ├─ detection_regex.detect_spans()
+          │     │      └─ ml_detector.MLDetector.detect_spans()
+          │     └─ crypto_aes_gcm.encrypt_pii()
+          │
+          ├─ Provider client (providers.py)
+          │     ├─ OpenAIClient
+          │     ├─ AnthropicClient
+          │     ├─ GoogleGeminiClient
+          │     └─ DeepSeekClient
+          │
+          └─ desanitize(raw_reply, master_key)
+                └─ crypto_aes_gcm.decrypt_pii()
 ```
 
-The library itself can also be used directly without the proxy via `LLMFirewallClient`.
+The **sanitization pipeline** is independent of any specific LLM provider: it only sees text. Provider-specific details are isolated inside `providers.py`.
 
----
+## Core concepts
 
-## Modules
+### Spans
 
-### 1. Detection (`firewall/detection_regex.py`)
-
-Responsibilities:
-
-- Find PII spans based on regular expressions:
-  - `EMAIL`, `PHONE`, `CARD`, `ID`, `SECRET`, `ADDRESS`, `OTHER_PII`
-- Return a list of `Span(type, start, end)` objects.
-- Merge overlapping spans conservatively.
-- Wrap any unexpected failures in `DetectionError` and log them.
-
-Future extension:
-
-- A ML/BERT-based detector can be added in a separate module and plugged into `sanitize()` via a detector interface.
-
----
-
-### 2. Crypto (`firewall/crypto_aes_gcm.py`)
-
-Responsibilities:
-
-- Encrypt and decrypt PII values using AES-GCM with:
-  - per-type subkeys derived from a master key using HKDF,
-  - padded plaintexts to reduce length leakage,
-  - associated data (AAD) bound to the PII type (prevents type swapping attacks).
-- `encrypt_pii(value, pii_type, master_key) -> str` returns a base64url string.
-- `decrypt_pii(token, pii_type, master_key) -> str` recovers the original value.
-
-Errors:
-
-- Use `CryptoError` when:
-  - master key is invalid,
-  - ciphertext is malformed,
-  - authentication fails,
-  - decoded data is inconsistent.
-
-Other crypto modules:
-
-- `crypto_simple.py` and/or `crypto_dummy.py` may contain legacy or test-only schemes; they are **not** intended for production use.
-
----
-
-### 3. Core pipeline (`firewall/sanitize.py`)
-
-Responsibilities:
-
-- `sanitize(text, key, detector=detect_spans)`:
-  - runs the detector,
-  - for each PII span:
-    - extracts the substring,
-    - calls `encrypt_pii`,
-    - replaces it with a token: `⟦TYPE:BASE64⟧`.
-  - returns the sanitized text.
-
-- `desanitize(text, key, mode="original")`:
-  - finds tokens of the form `⟦TYPE:PAYLOAD⟧`,
-  - if `mode="encrypted"`: leaves tokens as-is,
-  - if `mode="original"`: decrypts `PAYLOAD` for each `TYPE` and replaces the token with plaintext.
-
-Token format:
-
-```text
-⟦TYPE:PAYLOAD⟧
-
-TYPE    = uppercase label (e.g., EMAIL, CARD, SECRET, ...)
-PAYLOAD = AES-GCM ciphertext encoded as base64url
-```
-
-Examples:
-
-```text
-"My email is ⟦EMAIL:AbCdEf...⟧ and my card is ⟦CARD:XyZ...⟧."
-```
-
-The LLM provider sees opaque tokens with no direct hint of the plaintext.
-
-On the way back, `desanitize()`:
-
-- finds `⟦TYPE:PAYLOAD⟧` tokens,
-- calls `decrypt_pii(PAYLOAD, TYPE, master_key)`,
-- replaces tokens with plaintext (in `mode="original"`),
-- leaves tokens intact if `mode="encrypted"`.
-
----
-
-### 4. Config (`firewall/config.py`)
-
-Responsibilities:
-
-- Load the **master key** for AES-GCM from environment.
-- Validate its length (≥ 32 bytes).
-- Raise `ConfigError` (a subclass of `FirewallError`) if not set or invalid.
-
-Typical usage:
+`firewall/spans.py` defines a `Span` dataclass:
 
 ```python
-from firewall.config import get_master_key_from_env
-
-key = get_master_key_from_env("PII_FIREWALL_KEY")
+@dataclass
+class Span:
+    type: str   # e.g. "EMAIL", "CARD", "NAME"
+    start: int  # inclusive character offset
+    end: int    # exclusive character offset
 ```
 
----
+The detector outputs a list of spans; `sanitize()` uses them to slice and encrypt.
 
-### 5. Error hierarchy (`firewall/errors.py`)
+### Errors
+
+`firewall/errors.py` defines:
 
 - `FirewallError` – base class for all project-specific errors.
-- `CryptoError` – crypto failures.
-- `DetectionError` – detection-related failures.
-- `SanitizationError` – sanitize/desanitize pipeline issues.
-- `ConfigError` – configuration problems (missing/invalid keys).
+- `CryptoError` – crypto layer failures.
+- `DetectionError` – detection layer failures (regex or ML).
+- `SanitizationError` – failures in `sanitize()` / `desanitize()`.
 
-This allows the app layer to:
+Higher-level code (CLI, API) catches `FirewallError` and surfaces a friendly message.
 
-- catch specific errors where needed,
-- or catch `FirewallError` as a generic “firewall failed” exception.
+## Detection layer
 
----
+### Regex detection (`detection_regex.py`)
 
-### 6. LLM client wrapper (`firewall/client.py`)
+Responsibilities:
 
-`LLMFirewallClient` is a high-level wrapper that can sit around any LLM-like callable:
+- Use regular expressions to detect structured PII types:
+  - `EMAIL`, `PHONE`, `CARD`, `ID`, `SECRET`, `ADDRESS`, `OTHER_PII`.
+- Construct `Span` objects for each match.
+- Merge overlapping spans conservatively:
+  - `CARD` wins over `PHONE` when ranges overlap,
+  - `ID` can override `PHONE` if they overlap,
+  - overlapping spans of the same type are merged.
 
-- Constructor:
+Detection errors are wrapped as `DetectionError`.
 
-  ```python
-  client = LLMFirewallClient(master_key, llm_call)
-  # or
-  client = LLMFirewallClient.from_env(llm_call)
-  ```
+### ML detection (`ml_detector.py`)
 
-- `ask(user_text, mode="original")`:
+Responsibilities:
 
-  - sanitize `user_text`,
-  - send sanitized text to `llm_call`,
-  - desanitize the reply,
-  - returns a triple: `(sanitized_prompt, raw_llm_reply, final_reply)`.
+- Load a HuggingFace NER pipeline (`dslim/bert-base-NER`) once per process.
+- Normalize casing with `normalize_for_ner()`:
+  - Title-case per word,
+  - only ASCII letters modified,
+  - string length preserved (indices stay valid).
+- Run NER and map entity groups to PII types:
+  - `PER` → `NAME`
+  - `LOC` → `ADDRESS`
+  - `ORG` → `OTHER_PII`
+- Filter low-confidence entities and merge overlapping spans of the same type.
 
-This abstraction is used in the CLI demo and can be reused in other applications.
+This layer is better at names and many addresses than regex alone.
 
----
+### Combined detection (`detection_combined.py`)
 
-### 7. Provider abstraction (`firewall/providers.py`)
+`detect_spans_combined(text: str) -> List[Span]`:
 
-Implements per-provider HTTP clients with a unified interface:
+1. Run regex detection.
+2. Run ML detection.
+3. Concatenate, sort by `(start, end)`.
+4. Merge overlaps with precedence:
+   - “strong” types (`EMAIL`, `CARD`, `SECRET`, `PHONE`, `ID`) override weaker ML spans,
+   - equal-strength spans merge by extending their end offset.
 
-- `ProviderClient.chat(messages: List[{"role": ..., "content": ...}]) -> str`
-- Supported providers:
-  - `OpenAIClient`
-  - `AnthropicClient`
-  - `GoogleGeminiClient`
-  - `DeepSeekClient`
-- `get_provider_client(name)` returns the appropriate client instance.
+`sanitize()` calls `_detect_spans_with_fallback()`:
+
+- try combined detection first,
+- on failure (e.g. missing model, CUDA issues) log a warning and fall back to regex-only,
+- on total failure, raise `DetectionError`.
+
+## Crypto layer
+
+Implemented in `firewall/crypto_aes_gcm.py` (see `docs/CRYPTO.md` for details).
+
+Highlights:
+
+- AES‑256‑GCM with per-type HKDF subkeys,
+- bucketed padding with a 2-byte length prefix,
+- AAD bound to `pii_type` to prevent type swapping,
+- `encrypt_pii()` / `decrypt_pii()` are the only public entry points.
+
+## Sanitization pipeline (`sanitize.py`)
+
+`sanitize(text: str, key: bytes) -> str`:
+
+1. Detect spans via `_detect_spans_with_fallback(text)`.
+2. Sort by `start`.
+3. Iterate over the text, emitting non-PII segments unchanged.
+4. For each span:
+   - slice the substring,
+   - encrypt it with `encrypt_pii()`,
+   - replace it with a token `⟦TYPE:PAYLOAD⟧`.
+5. Return the concatenated result.
+
+On detection or crypto errors, raise `SanitizationError`.
+
+### Desanitization
+
+`desanitize(text: str, key: bytes, mode: str = "original") -> str`:
+
+- Finds tokens via regex (`⟦([A-Z_]+):([^⟧]+)⟧`).
+
+Modes:
+
+- `"original"` – decrypt each token with `decrypt_pii()` and replace it by plaintext.
+- `"encrypted"` – leave tokens as-is.
+
+If decryption fails, raise `SanitizationError`.
+
+## High-level client (`client.py`)
+
+`LLMFirewallClient` wraps an arbitrary LLM callable (real or fake):
+
+```python
+client = LLMFirewallClient.from_env(llm_call)
+sanitized, raw_reply, final_reply = client.ask("Some text with PII")
+```
+
+- `sanitize_outgoing()` – apply `sanitize()`,
+- `desanitize_incoming()` – apply `desanitize()`,
+- `ask()` – full roundtrip through sanitize → LLM → desanitize,
+- wraps unknown errors as `FirewallError("Unexpected error in LLMFirewallClient.ask()")`.
+
+## Provider layer (`providers.py`)
+
+Defines:
+
+- `ProviderName`: `"openai" | "anthropic" | "google" | "deepseek"`.
+- `ProviderClient` protocol: `async def chat(self, messages: List[Dict[str, str]]) -> str`.
+- Concrete implementations:
+  - `OpenAIClient` – `/chat/completions`.
+  - `AnthropicClient` – Messages API (`/v1/messages`). 
+  - `GoogleGeminiClient` – `generateContent`.
+  - `DeepSeekClient` – OpenAI-compatible chat completions.
 
 Each client:
 
-- reads its API key and model name from environment,
-- maps a simple messages format to the provider’s actual API,
-- raises `FirewallError` on HTTP/API errors.
+- reads API key, base URL and model name from env,
+- converts OpenAI-style `messages` into provider-specific request bodies,
+- calls `_raise_for_insufficient_or_generic()` on HTTP errors:
+  - maps “insufficient balance / credit” messages to `FirewallError("INSUFFICIENT_BALANCE")`,
+  - otherwise wraps provider JSON into a generic `FirewallError`.
 
----
+`get_provider_client(name: ProviderName)` returns the appropriate client or raises on unsupported providers.
 
-### 8. FastAPI proxy (`api.py`)
+## FastAPI proxy (`api.py`)
 
-Main entrypoint for the “full app”:
+Main endpoints:
 
-- `POST /v1/chat/completions`:
-  - request: `{ provider, model?, messages }`
-  - pipeline:
-    1. load master key,
-    2. build provider client,
-    3. flatten `messages` into a prompt string for firewall,
-    4. `sanitize` → `async` provider call → `desanitize`,
-    5. return `{ sanitized_prompt, raw_llm_reply, final_reply }`.
+- `GET /health` – status, master key presence, configured providers.
+- `GET /whoami` – which providers are configured + default provider.
+- `POST /v1/chat/completions` – OpenAI-style chat route with extra `provider` field.
 
-- `GET /health`:
-  - reports status (`ok` / `degraded` / `error`),
-  - whether master key is present,
-  - which providers have API keys.
+Chat flow:
 
-- `GET /whoami`:
-  - lists configured providers,
-  - inferred default provider,
-  - master key presence.
+1. Load master key.
+2. Instantiate provider client from `provider` field or fallback default.
+3. Flatten incoming `messages` into a single conversation text.
+4. Call `sanitize(text, master_key)`.
+5. Build provider `messages` including:
+   - a system prompt describing token semantics,
+   - optional user-supplied system content,
+   - one `user` message with the sanitized conversation.
+6. Call `await client.chat(messages)`.
+7. Call `desanitize(raw_reply, master_key)`.
+8. Collect token types from `sanitized_prompt` to build `detected_pii` summary.
+9. Return the JSON response consumed by the UI.
 
----
+Error mapping:
 
-### 9. CLI (`cli.py`)
+- `INSUFFICIENT_BALANCE` → HTTP 402 with small JSON payload.
+- Provider errors → HTTP 502 with detail.
+- Firewall errors (crypto/detection/sanitization) → HTTP 500.
 
-Thin wrapper around `LLMFirewallClient` for local demos:
+## Web UI (`static/index.html`)
 
-- Reads master key from env.
-- Uses a simple fake LLM function that echoes the sanitized prompt.
-- Outputs:
-  - original input,
+Single-page app (Tailwind + vanilla JS) that:
+
+- Calls `/health` + `/whoami` on load to show status and configured providers.
+- Maintains a message history in memory and posts it to `/v1/chat/completions`.
+- Renders:
+  - detected PII types and counts,
   - sanitized prompt,
   - raw LLM reply,
   - final reply.
+- Supports:
+  - provider selection + optional model override,
+  - system prompt text area,
+  - light/dark mode toggle,
+  - reset chat button,
+  - modal popup if the backend returns `INSUFFICIENT_BALANCE`.
 
----
+## CLI (`cli.py`)
 
-## Extensibility
+A small command-line interface that wraps a demo LLM in `LLMFirewallClient` to show:
 
-- **ML-based detection**:
-  - Add a new module (e.g. `detection_ml.py`),
-  - implement a function compatible with the detector interface,
-  - plug it into `sanitize()` (optional parameter or config flag).
+- how text is sanitized,
+- what a “raw” reply looks like with tokens,
+- how final output is reconstructed for local display.
 
-- **Additional providers**:
-  - Create new client classes in `providers.py`,
-  - add them to `ProviderName` and `get_provider_client()`.
+Useful for experiments without running the HTTP server or web UI.
 
-- **Policy engine**:
-  - Introduce a config layer specifying which PII types to mask,
-  - or different modes per type (e.g., never decrypt `SECRET` fields).
+## Future work
 
-This architecture is designed so that these extensions require minimal changes to existing code.
+- Richer policy engine (per-type rules, “never decrypt SECRET”).
+- Streaming chat responses (SSE or websockets).
+- Additional PII categories and detectors.
+- Stronger key management and rotation strategies.
+
