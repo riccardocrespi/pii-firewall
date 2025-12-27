@@ -267,23 +267,3 @@ Provider keys (at least one should be set):
 - `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL`, `DEEPSEEK_BASE_URL`
 
 If a provider’s key is missing, it simply won’t appear as “configured” in `/health` and `/whoami`, and the UI will either hide or de-emphasize it.
-
----
-
-## 6. What to show in a demo / report
-
-For a course demo or project report, a good flow is:
-
-1. Start the server and open `http://127.0.0.1:8000/`.
-2. Show `GET /whoami` in the browser or via `curl` to highlight which providers are configured.
-3. In the UI:
-   - pick a provider (e.g., OpenAI),
-   - paste a prompt that includes email, phone, card, ID, and a secret,
-   - show the PII panel lighting up,
-   - expand the sanitized prompt (no raw PII),
-   - then show the final reply with PII restored locally.
-4. Optionally flip your balance to a provider with no credits to demonstrate the nice “insufficient balance” popup.
-5. Finally, run a CLI example in the terminal to show the same pipeline without any web stack involved.
-
-That’s usually enough to communicate both **security motivation** and **engineering design** to reviewers or TAs.
-

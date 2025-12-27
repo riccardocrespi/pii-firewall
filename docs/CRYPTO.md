@@ -156,7 +156,7 @@ If token decryption fails, `desanitize()` raises `SanitizationError`; callers ca
 `crypto_dummy.py` contains `dummy_encrypt()` / `dummy_decrypt()` that simply reverse the string. This is only used in tests or experiments and is **not** used in the production pipeline.
 
 
-## Threat model (short version)
+## Threat model
 
 This design aims to:
 
