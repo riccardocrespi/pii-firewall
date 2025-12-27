@@ -47,3 +47,23 @@ def test_combined_name_email_card() -> None:
     assert s_name, "Expected at least one NAME span"
     assert s_email, "Expected at least one EMAIL span"
     assert s_card, "Expected at least one CARD span"
+
+@pytest.mark.slow
+def test_ml_handles_weird_casing_for_name_and_address() -> None:
+    # Lowercase / weird casing that should still be detected thanks to normalization
+    text = "my name is tEODoro toSCano and i live in miLan"
+
+    spans = _spans_for(text)
+    types = [s.type for s in spans]
+
+    assert "NAME" in types
+    assert "ADDRESS" in types
+
+    # Optional: sanity-check the actual substrings
+    name_spans = [s for s in spans if s.type == "NAME"]
+    addr_spans = [s for s in spans if s.type == "ADDRESS"]
+
+    assert name_spans, "Expected at least one NAME span"
+    assert addr_spans, "Expected at least one ADDRESS span"
+
+
