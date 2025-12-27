@@ -10,6 +10,44 @@ from transformers import pipeline
 from .spans import Span
 
 
+def normalize_for_ner(text: str) -> str:
+    """
+    Return a version of `text` where each word is put into 'Title' case
+    (first letter uppercase, remaining letters lowercase), but:
+
+      - we ONLY touch ASCII letters [A-Za-z]
+      - we NEVER insert or delete characters
+
+    This way the string length and all character indices stay exactly
+    the same as in the original text, so the start/end offsets returned
+    by the NER model are still valid on the original string.
+    """
+    chars = list(text)
+    at_word_start = True
+
+    for i, ch in enumerate(chars):
+        # Restrict to basic Latin letters to avoid weird Unicode case folding
+        is_ascii_letter = ("a" <= ch <= "z") or ("A" <= ch <= "Z")
+
+        if is_ascii_letter:
+            if at_word_start:
+                # First letter of a word → uppercase
+                chars[i] = ch.upper()
+            else:
+                # Non-first letter of a word → lowercase
+                chars[i] = ch.lower()
+            at_word_start = False
+        else:
+            # Treat whitespace and common punctuation as word boundaries
+            if ch.isspace() or ch in "-_/\\,.!?;:()[]{}'\"":
+                at_word_start = True
+            else:
+                # Non-letter, non-boundary: leave as-is, continue current word
+                at_word_start = False
+
+    return "".join(chars)
+
+
 class MLDetector:
     """
     Wraps a pretrained NER model (dslim/bert-base-NER) and exposes
@@ -37,12 +75,23 @@ class MLDetector:
     def detect_spans(self, text: str) -> List[Span]:
         """
         Run NER on text and return PII spans in your format.
+
+        We normalize casing (Title Case per word) before sending it to the NER
+        model to improve detection for weird user casing like:
+
+            "my name is JOhN dOe and i live in nEw yORk."
+
+        The normalization only changes letter case, never length, so the
+        offsets returned by the model are still valid on the original text.
         """
         text = text or ""
         if not text.strip():
             return []
 
-        raw_entities = self._pipe(text)
+        # Normalize text for NER, but keep length and indices identical
+        norm_text = normalize_for_ner(text)
+
+        raw_entities = self._pipe(norm_text)
         spans: List[Span] = []
 
         for ent in raw_entities:
@@ -94,7 +143,7 @@ class MLDetector:
 # Simple manual test: `python -m firewall.ml_detector`
 if __name__ == "__main__":
     detector = MLDetector()
-    text = "My name is Alice Johnson and I live near Times Square in New York."
+    text = "my name is tEODoro toSCano and i live near times square in new york."
     spans = detector.detect_spans(text)
 
     print("Text:", text)
