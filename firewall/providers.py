@@ -18,6 +18,45 @@ class ProviderClient(Protocol):
         ...
 
 
+def _raise_for_insufficient_or_generic(provider: str, resp: httpx.Response) -> None:
+    """
+    Helper to normalize provider HTTP errors.
+
+    - If the JSON body contains an error message that clearly indicates lack of
+      credits / balance, raise FirewallError("INSUFFICIENT_BALANCE").
+    - Otherwise, raise FirewallError with a generic provider error message.
+    """
+    try:
+        data = resp.json()
+    except Exception:
+        raise FirewallError(
+            f"{provider} API error: {resp.status_code} {resp.text}"
+        )
+
+    err = data.get("error") or {}
+    msg = (err.get("message") or "").strip()
+    code = (err.get("code") or "").strip().lower()
+    lower = msg.lower()
+
+    # Heuristics for "no money" / "no credits":
+    #  - Generic "Insufficient Balance" style messages
+    #  - Anthropic-style "Your credit balance is too low to access the ..."
+    if (
+        "insufficient" in lower
+        or ("balance" in lower and "low" in lower)
+        or "credit balance" in lower
+        or code in {"insufficient_balance", "insufficient_quota"}
+    ):
+        raise FirewallError("INSUFFICIENT_BALANCE")
+
+    # Fallback: generic error with full JSON
+    raise FirewallError(f"{provider} API error: {resp.status_code} {data}")
+
+
+
+# -------------------- OpenAI -------------------- #
+
+
 class OpenAIClient:
     """
     Minimal wrapper for OpenAI Chat Completions API (gpt-4.x / gpt-3.5-like).
@@ -25,6 +64,7 @@ class OpenAIClient:
     We assume:
       - API key in OPENAI_API_KEY
       - Model name in OPENAI_MODEL (default: gpt-4o-mini)
+      - Base URL in OPENAI_BASE_URL (default: https://api.openai.com/v1)
     """
 
     def __init__(self) -> None:
@@ -37,9 +77,23 @@ class OpenAIClient:
         self._base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
     async def chat(self, messages: List[Dict[str, str]]) -> str:
+        """
+        POST {base_url}/chat/completions
+
+        Headers:
+          Authorization: Bearer <OPENAI_API_KEY>
+          Content-Type: application/json
+
+        Body:
+          {
+            "model": "<OPENAI_MODEL>",
+            "messages": [ { "role": "...", "content": "..." }, ... ]
+          }
+        """
         url = f"{self._base_url}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
         }
         payload = {
             "model": self._model,
@@ -49,14 +103,16 @@ class OpenAIClient:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(url, headers=headers, json=payload)
             if resp.status_code >= 400:
-                raise FirewallError(f"OpenAI API error: {resp.status_code} {resp.text}")
+                _raise_for_insufficient_or_generic("OpenAI", resp)
 
             data = resp.json()
             try:
                 return data["choices"][0]["message"]["content"]
-            except (KeyError, IndexError) as exc:
+            except (KeyError, IndexError, TypeError) as exc:
                 raise FirewallError("Unexpected OpenAI response format") from exc
 
+
+# -------------------- Anthropic (Claude) -------------------- #
 
 
 class AnthropicClient:
@@ -67,6 +123,7 @@ class AnthropicClient:
       - API key in ANTHROPIC_API_KEY
       - Model in ANTHROPIC_MODEL (default: claude-3-5-sonnet-latest)
       - Base URL in ANTHROPIC_BASE_URL (default: https://api.anthropic.com/v1)
+      - API version in ANTHROPIC_API_VERSION (default: 2023-06-01)
     """
 
     def __init__(self) -> None:
@@ -76,9 +133,7 @@ class AnthropicClient:
 
         self._api_key = api_key
         self._model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest")
-        # default includes /v1 so that url = base + "/messages" matches docs
         self._base_url = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1")
-        # allow overriding the Claude API version if needed, but default to the stable one
         self._version = os.getenv("ANTHROPIC_API_VERSION", "2023-06-01")
 
     def _build_payload(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
@@ -87,6 +142,7 @@ class AnthropicClient:
 
         - Collect all role == "system" messages into a single top-level `system` string.
         - Keep `user` and `assistant` messages as-is in the `messages` array.
+
         Anthropic's examples use `role` ∈ {"user","assistant"} for messages, with
         an optional separate `system` field.
         """
@@ -103,12 +159,10 @@ class AnthropicClient:
                 system_texts.append(content)
                 continue
 
-            # Anthropic supports "user" and "assistant"
             if role not in ("user", "assistant"):
                 role = "user"
 
-            # For pure-text chats you can send `content` as a plain string;
-            # Anthropic will treat it as a shorthand for a single text block.
+            # For pure text you can use the shorthand 'content: str'
             convo.append({"role": role, "content": content})
 
         if not convo:
@@ -131,7 +185,6 @@ class AnthropicClient:
 
         Endpoint:
           POST {base_url}/messages  (default: https://api.anthropic.com/v1/messages)
-        Required headers (per docs): x-api-key, anthropic-version, content-type.
         """
         url = f"{self._base_url}/messages"
         headers = {
@@ -144,9 +197,7 @@ class AnthropicClient:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(url, headers=headers, json=payload)
             if resp.status_code >= 400:
-                raise FirewallError(
-                    f"Anthropic API error: {resp.status_code} {resp.text}"
-                )
+                _raise_for_insufficient_or_generic("Anthropic", resp)
 
             data = resp.json()
             try:
@@ -161,27 +212,23 @@ class AnthropicClient:
                 raise FirewallError("Unexpected Anthropic response format") from exc
 
 
-
+# -------------------- Google Gemini -------------------- #
 
 
 class GoogleGeminiClient:
     """
-    Minimal wrapper for Google Gemini chat API.
+    Minimal wrapper for Google Gemini chat API (generateContent).
 
     We assume:
       - API key in GEMINI_API_KEY
       - Model in GEMINI_MODEL (default: gemini-2.5-flash)
-      - Base URL in GEMINI_BASE_URL (default: v1beta public endpoint)
+      - Base URL in GEMINI_BASE_URL (default: https://generativelanguage.googleapis.com/v1beta)
 
-    The mapping from our messages -> Gemini request is:
+    Mapping from our messages -> Gemini request:
 
       - role == "system"    -> system_instruction.parts[].text
       - role == "user"      -> contents[].role = "user"
       - role == "assistant" -> contents[].role = "model"
-
-    So if the caller passes previous user + assistant turns, we keep the
-    entire multi-turn conversation in the 'contents' array, as recommended
-    in the Gemini docs.
     """
 
     def __init__(self) -> None:
@@ -195,19 +242,9 @@ class GoogleGeminiClient:
             "GEMINI_BASE_URL",
             "https://generativelanguage.googleapis.com/v1beta",
         )
-        # Example:
-        #   https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent
         self._url = f"{base_url}/models/{self._model}:generateContent"
 
     def _build_payload(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
-        """
-        Convert OpenAI-style messages into Gemini's generateContent request body.
-
-        Gemini expects:
-          - contents[]: conversation history and latest turn
-          - optional system_instruction: persistent “system prompt”
-        See: generateContent + text generation + multi-turn docs. :contentReference[oaicite:2]{index=2}
-        """
         contents: List[Dict[str, Any]] = []
         system_texts: List[str] = []
 
@@ -225,7 +262,6 @@ class GoogleGeminiClient:
             if role == "assistant":
                 gemini_role = "model"
             else:
-                # Treat anything else ("user", "tool", etc.) as user for now
                 gemini_role = "user"
 
             contents.append(
@@ -250,24 +286,17 @@ class GoogleGeminiClient:
     async def chat(self, messages: List[Dict[str, str]]) -> str:
         """
         Send a multi-turn chat request to Gemini using generateContent.
-
-        The caller is responsible for passing the *whole* conversation history
-        as 'messages' if they want context preserved, exactly like OpenAI-style
-        chat APIs.
         """
         headers = {
-            "x-goog-api-key": self._api_key,  # per Gemini REST docs
+            "x-goog-api-key": self._api_key,
             "Content-Type": "application/json",
         }
-
         payload = self._build_payload(messages)
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(self._url, headers=headers, json=payload)
             if resp.status_code >= 400:
-                raise FirewallError(
-                    f"Gemini API error: {resp.status_code} {resp.text}"
-                )
+                _raise_for_insufficient_or_generic("Gemini", resp)
 
             data = resp.json()
             try:
@@ -282,6 +311,8 @@ class GoogleGeminiClient:
             except (KeyError, IndexError, TypeError) as exc:
                 raise FirewallError("Unexpected Gemini response format") from exc
 
+
+# -------------------- DeepSeek -------------------- #
 
 
 class DeepSeekClient:
@@ -334,17 +365,16 @@ class DeepSeekClient:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(url, headers=headers, json=payload)
             if resp.status_code >= 400:
-                raise FirewallError(
-                    f"DeepSeek API error: {resp.status_code} {resp.text}"
-                )
+                _raise_for_insufficient_or_generic("DeepSeek", resp)
 
             data = resp.json()
             try:
                 return data["choices"][0]["message"]["content"]
             except (KeyError, IndexError, TypeError) as exc:
-                raise FirewallError(
-                    "Unexpected DeepSeek response format"
-                ) from exc
+                raise FirewallError("Unexpected DeepSeek response format") from exc
+
+
+# -------------------- Factory -------------------- #
 
 
 def get_provider_client(name: ProviderName) -> ProviderClient:

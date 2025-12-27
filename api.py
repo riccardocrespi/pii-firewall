@@ -8,7 +8,7 @@ from pathlib import Path
 from collections import Counter
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -55,6 +55,7 @@ All other text (outside these tokens) should be handled normally: reason, summar
 
 # ----------- Request / response models ----------- #
 
+
 class Message(BaseModel):
     role: Literal["system", "user", "assistant"]
     content: str
@@ -72,7 +73,7 @@ class ChatRequest(BaseModel):
     )
     model: Optional[str] = Field(
         default=None,
-        description="Optional model override, provider-specific.",
+        description="Optional model override, provider-specific (currently not wired through).",
     )
     messages: List[Message]
 
@@ -97,6 +98,7 @@ class WhoAmIResponse(BaseModel):
 
 
 # ----------- Helpers ----------- #
+
 
 def _get_master_key() -> bytes:
     return get_master_key_from_env("PII_FIREWALL_KEY")
@@ -127,34 +129,38 @@ def _build_firewalled_client(provider: ProviderName) -> LLMFirewallClient:
 
 # ----------- Routes ----------- #
 
+
 @app.post("/v1/chat/completions", response_model=ChatResponse)
-async def chat(request: ChatRequest) -> ChatResponse:
+async def chat(request: ChatRequest):
     """
     Entry point: behaves like a mini OpenAI-compatible chat endpoint,
     but with an extra 'provider' field and PII firewall in front.
     """
+    # 0) Master key
     try:
         master_key = _get_master_key()
     except FirewallError as exc:
         logger.error("Config error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    # Build provider client
+    # 1) Build provider client
     try:
         provider_client = get_provider_client(request.provider)
     except FirewallError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        msg = str(exc)
+        # This should normally only be config errors (missing API keys, etc.)
+        logger.error("Provider client error (%s): %s", request.provider, msg)
+        raise HTTPException(status_code=500, detail=msg) from exc
 
-    # Simple strategy:
-    #  - Join all user+system messages into one string to send to the firewall.
-    #  - For demo purposes, we treat the whole conversation as a single prompt.
+    # 2) Flatten conversation into a single text blob to sanitize
+    #    (simple but effective; includes previous turns as text).
     lines: List[str] = []
     for m in request.messages:
         lines.append(f"{m.role.upper()}: {m.content}")
     user_text = "\n".join(lines)
 
-    # LLM call wrapper: always add firewall system prompt,
-    # then user system messages, then the sanitized conversation.
+    # 3) LLM call wrapper: always add firewall system prompt,
+    #    then user system messages, then the sanitized conversation.
     async def async_llm_call(prompt: str) -> str:
         """
         Wrap the sanitized prompt into messages for the provider.
@@ -184,13 +190,14 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
         return await provider_client.chat(provider_messages)
 
-    # 1) Outgoing firewall
+    # 4) Outgoing firewall: sanitize
     try:
         sanitized_prompt = sanitize(user_text, master_key)
     except FirewallError as exc:
         logger.error("Sanitization error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    # Compute detected PII summary for the UI
     matches = TOKEN_RE.findall(sanitized_prompt)
     detected_pii: Optional[List[DetectedPIISummary]] = None
     if matches:
@@ -200,17 +207,31 @@ async def chat(request: ChatRequest) -> ChatResponse:
             for t in sorted(counts.keys())
         ]
 
-    # 2) LLM call (async)
+    # 5) LLM call (async)
     try:
         raw_reply = await async_llm_call(sanitized_prompt)
     except FirewallError as exc:
-        logger.error("LLM provider error: %s", exc)
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        msg = str(exc)
+        # Special case: insufficient balance propagated from providers.py
+        if msg == "INSUFFICIENT_BALANCE":
+            return JSONResponse(
+                status_code=402,  # Payment Required-ish
+                content={
+                    "error_type": "INSUFFICIENT_BALANCE",
+                    "provider": request.provider,
+                    "message": "Your account has insufficient balance with this provider.",
+                },
+            )
+        logger.error("LLM provider error (%s): %s", request.provider, msg)
+        raise HTTPException(status_code=502, detail=msg) from exc
     except Exception as exc:
         logger.exception("Unexpected error when calling provider")
-        raise HTTPException(status_code=502, detail="Unexpected error from LLM provider") from exc
+        raise HTTPException(
+            status_code=502,
+            detail="Unexpected error from LLM provider",
+        ) from exc
 
-    # 3) Incoming firewall
+    # 6) Incoming firewall: desanitize
     try:
         final_reply = desanitize(raw_reply, master_key, mode="original")
     except FirewallError as exc:
@@ -311,4 +332,3 @@ async def index() -> str:
         return index_path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return "<h1>PII Firewall UI</h1><p>static/index.html not found.</p>"
-

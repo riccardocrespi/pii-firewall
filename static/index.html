@@ -15,6 +15,46 @@
   <body
     class="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 transition-colors duration-200"
   >
+    <!-- Insufficient balance modal -->
+    <div
+      id="insufficient-modal"
+      class="fixed inset-0 z-40 hidden items-center justify-center bg-black/40 backdrop-blur-sm"
+    >
+      <div
+        class="max-w-sm w-full rounded-2xl bg-white p-4 shadow-xl border border-slate-200 text-slate-900 dark:bg-slate-900 dark:border-slate-700 dark:text-slate-50"
+      >
+        <div class="flex items-start gap-3">
+          <div
+            class="mt-1 flex h-8 w-8 items-center justify-center rounded-full bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300"
+          >
+            ⚠️
+          </div>
+          <div class="flex-1">
+            <h3 class="text-sm font-semibold">
+              Insufficient balance on provider
+            </h3>
+            <p
+              id="insufficient-modal-text"
+              class="mt-1 text-xs text-slate-600 dark:text-slate-300"
+            >
+              Your account appears to have insufficient balance with this LLM
+              provider. Please check your credits or choose a different
+              provider.
+            </p>
+          </div>
+        </div>
+        <div class="mt-4 flex justify-end gap-2">
+          <button
+            id="insufficient-modal-close"
+            type="button"
+            class="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div
       class="min-h-screen max-w-6xl mx-auto px-4 py-6 flex flex-col gap-6"
     >
@@ -346,6 +386,28 @@
     </div>
 
     <script>
+      // Modal helpers
+      function openInsufficientModal(provider, message) {
+        const modal = document.getElementById("insufficient-modal");
+        const textEl = document.getElementById("insufficient-modal-text");
+        if (!modal || !textEl) return;
+
+        const providerLabel = provider ? ` (${provider})` : "";
+        textEl.textContent =
+          message ||
+          `Your account appears to have insufficient balance with this provider${providerLabel}. Please check your credits or select another provider.`;
+
+        modal.classList.remove("hidden");
+        modal.classList.add("flex");
+      }
+
+      function closeInsufficientModal() {
+        const modal = document.getElementById("insufficient-modal");
+        if (!modal) return;
+        modal.classList.add("hidden");
+        modal.classList.remove("flex");
+      }
+
       // Per-tab in-memory conversation history
       // [{role: "system"|"user"|"assistant", content: "..."}]
       let conversation = [];
@@ -495,10 +557,40 @@
           });
 
           if (!res.ok) {
-            const text = await res.text();
+            let errorData = null;
+            let rawText = "";
+            try {
+              rawText = await res.text();
+              errorData = rawText ? JSON.parse(rawText) : null;
+            } catch {
+              // ignore JSON parse errors
+            }
+
+            // Special handling: insufficient balance
+            if (
+              res.status === 402 &&
+              errorData &&
+              errorData.error_type === "INSUFFICIENT_BALANCE"
+            ) {
+              openInsufficientModal(
+                errorData.provider,
+                errorData.message ||
+                  "Your account appears to have insufficient balance with this provider."
+              );
+              errorText.textContent =
+                "Insufficient balance with this provider. See popup for details.";
+              errorText.classList.remove("hidden");
+
+              btn.disabled = false;
+              spinner.classList.add("hidden");
+              btnText.textContent = "Send through firewall";
+              return;
+            }
+
+            // Fallback: generic error
             throw new Error(
               `HTTP ${res.status} – ${
-                text || "Unexpected error from server"
+                rawText || "Unexpected error from server"
               }`,
             );
           }
@@ -627,6 +719,24 @@
             const piiList = document.getElementById("pii-list");
             piiList.innerHTML =
               '<span class="text-slate-400 dark:text-slate-500">Conversation reset.</span>';
+          });
+        }
+
+        const modalClose = document.getElementById(
+          "insufficient-modal-close",
+        );
+        if (modalClose) {
+          modalClose.addEventListener("click", () => {
+            closeInsufficientModal();
+          });
+        }
+
+        const modal = document.getElementById("insufficient-modal");
+        if (modal) {
+          modal.addEventListener("click", (e) => {
+            if (e.target === modal) {
+              closeInsufficientModal();
+            }
           });
         }
       });
