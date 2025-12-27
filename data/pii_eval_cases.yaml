@@ -1,0 +1,84 @@
+- text: "My email is john.doe@example.com and my card is 4111 1111 1111 1111."
+  expected_types: ["EMAIL", "CARD"]
+
+- text: "Contact me at jane_smith+work@sub.domain.co.uk."
+  expected_types: ["EMAIL"]
+
+- text: "User: mario.rossi99@gmail.com just signed up."
+  expected_types: ["EMAIL"]
+
+- text: "The support address is help-desk@company.io for all issues."
+  expected_types: ["EMAIL"]
+
+- text: "My name is Alice Johnson and I live near Times Square in New York."
+  expected_types: ["NAME", "ADDRESS"]
+
+- text: "my name is tEODoro toSCano and i live in miLan"
+  expected_types: ["NAME", "ADDRESS"]
+
+- text: "Call me at +1 415 555 1234 and visit me at 221B Baker Street, London."
+  expected_types: ["PHONE", "ADDRESS"]
+
+- text: "My office landline is 0039 02 1234 5678."
+  expected_types: ["PHONE"]
+
+- text: "The Italian number is (+39) 333-111-2222, feel free to call."
+  expected_types: ["PHONE"]
+
+- text: "Here is an AWS key AKIAIOSFODNN7EXAMPLE that must never leave my machine."
+  expected_types: ["SECRET"]
+
+- text: "My GitHub token is ghp_AbCdEfGhIjKlMnOpQrSt1234 and it should be kept secret."
+  expected_types: ["SECRET"]
+
+- text: "Here is a JWT: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoianNtaXRoIn0.sflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+  expected_types: ["SECRET"]
+
+- text: "My AWS access key is AKIA1234567890ABCDEF and my SSN is 123-45-6789."
+  expected_types: ["SECRET", "ID"]
+
+- text: "The employee ID is ABC1234567 and the customer ID is XY987654321."
+  expected_types: ["ID"]
+
+- text: "My credit card number is 4111-1111-1111-1111 and the backup is 5500 0000 0000 0004."
+  expected_types: ["CARD"]
+
+- text: "I use card 4111111111111111 for online payments."
+  expected_types: ["CARD"]
+
+- text: "The IBAN for the transfer is IT60 1234 5678 9012 3456 7890 123."
+  expected_types: ["OTHER_PII"]
+
+- text: "The license plate numbers are AB123CD and XYZ 1234."
+  expected_types: ["OTHER_PII"]
+
+- text: "I live at 221B Baker Street, London, and work at OpenAI."
+  expected_types: ["ADDRESS"]
+
+- text: "We had a meeting at Piazza del Duomo, Milano yesterday."
+  expected_types: ["ADDRESS"]
+
+- text: "The organization OpenAI is collaborating with Google on several projects."
+  expected_types: ["OTHER_PII"]
+
+- text: "My name is Marco Rossi, my email is marco.rossi@example.com, and my phone is +39 333 222 1111."
+  expected_types: ["NAME", "EMAIL", "PHONE"]
+
+- text: "Send the report to finance-team@bigcorp.com and notify John Doe in London."
+  expected_types: ["EMAIL", "NAME", "ADDRESS"]
+
+- text: "API key: sk-ABCDEFGHIJKLMNOPQRST1234567890 must be stored securely."
+  expected_types: ["SECRET"]
+
+- text: "Completely harmless text with no emails, phone numbers, or IDs."
+  expected_types: []
+
+- text: "I love pizza, walking in the park, and reading books on weekends."
+  expected_types: []
+
+- text: "The quick brown fox jumps over the lazy dog in the sunny field."
+  expected_types: []
+
+- text: "Here is a phone-like number 1234-5678 that our detector will treat as a phone."
+  expected_types: ["PHONE"]
+

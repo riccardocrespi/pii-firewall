@@ -20,7 +20,7 @@ PHONE_RE = re.compile(
 )
 
 CARD_RE = re.compile(
-    r"\b(?:\d[ -]*?){13,19}\b"  # 13–19 digits with spaces/dashes
+    r"\b(?:\d{4}[ -]?){3}\d{4}\b"  #4 groups of 4 digits with eventual spaces or dashes
 )
 
 ID_RE = re.compile(
